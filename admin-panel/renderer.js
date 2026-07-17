@@ -2894,14 +2894,44 @@ function showCameraSecretModal(cameraId, secret) {
     openModal();
 }
 
-function editCctvCamera(cameraId, roomNumber, label, isActive) {
+async function editCctvCamera(cameraId, roomNumber, label, isActive) {
     const modalBody = document.getElementById('modalBody');
+    
+    // Fetch classrooms for the dropdown
+    let roomOptions = '<option value="">Loading rooms...</option>';
+    let roomFoundInList = false;
+    try {
+        const res = await fetch(api('/api/classrooms'));
+        if (res.ok) {
+            const data = await res.json();
+            const rooms = data.classrooms || data.data || data || [];
+            if (rooms.length > 0) {
+                roomOptions = '<option value="">— Select Room —</option>' +
+                    rooms.map(r => {
+                        const num = r.roomNumber || r.number || r.name || r;
+                        const roomLabel = r.label || r.building ? ` (${r.building || ''})` : '';
+                        const selected = (num === roomNumber) ? 'selected' : '';
+                        if (selected) roomFoundInList = true;
+                        return `<option value="${num}" ${selected}>${num}${roomLabel}</option>`;
+                    }).join('');
+            } else {
+                roomOptions = '<option value="">No classrooms found — type below</option>';
+            }
+        }
+    } catch (e) {
+        roomOptions = '<option value="">Could not load rooms — type below</option>';
+    }
+
     modalBody.innerHTML = `
         <h2>Edit Camera ${cameraId}</h2>
         <form id="editCameraForm">
             <div class="form-group">
                 <label>Room Number *</label>
-                <input type="text" name="roomNumber" class="form-input" required value="${roomNumber}">
+                <select name="roomNumber" id="editRoomNumberSelect" class="form-input" required onchange="syncEditRoomInput(this)">
+                    ${roomOptions}
+                </select>
+                <input type="text" id="editRoomNumberManual" name="roomNumberManual" class="form-input"
+                    placeholder="Or type room number manually" style="margin-top:6px;" value="${!roomFoundInList ? roomNumber : ''}">
             </div>
             <div class="form-group">
                 <label>Label</label>
@@ -2913,15 +2943,29 @@ function editCctvCamera(cameraId, roomNumber, label, isActive) {
             <button type="submit" class="btn btn-primary">Save</button>
         </form>
     `;
+    
+    // Ensure manual input syncs appropriately if the select didn't have the existing room
+    if (!roomFoundInList && roomNumber) {
+        const select = document.getElementById('editRoomNumberSelect');
+        if (select) select.value = '';
+    }
+
     document.getElementById('editCameraForm').addEventListener('submit', async (e) => {
         e.preventDefault();
         const fd = new FormData(e.target);
+        const selectedRoom = fd.get('roomNumber');
+        const manualRoom = (fd.get('roomNumberManual') || '').trim();
+        const finalRoomNumber = (selectedRoom && selectedRoom !== '' && selectedRoom !== '— Select Room —')
+            ? selectedRoom : manualRoom;
+        
+        if (!finalRoomNumber) { showNotification('Please select or enter a room number', 'error'); return; }
+
         try {
             const response = await fetch(`${GET_CCTV_CAMERAS}/${encodeURIComponent(cameraId)}`, {
                 method: 'PUT',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
-                    roomNumber: fd.get('roomNumber'),
+                    roomNumber: finalRoomNumber,
                     label: fd.get('label'),
                     isActive: fd.has('isActive')
                 })
@@ -2939,6 +2983,11 @@ function editCctvCamera(cameraId, roomNumber, label, isActive) {
         }
     });
     openModal();
+}
+
+function syncEditRoomInput(select) {
+    const manual = document.getElementById('editRoomNumberManual');
+    if (manual) manual.value = select.value !== '' ? '' : manual.value;
 }
 
 async function regenerateCameraSecret(cameraId) {
