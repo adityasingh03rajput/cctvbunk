@@ -11197,6 +11197,34 @@ app.delete('/api/cctv/cameras/:cameraId', async (req, res) => {
     }
 });
 
+// Force-trigger a capture window for a camera RIGHT NOW (admin testing/manual override)
+app.post('/api/cctv/cameras/:cameraId/force-trigger', async (req, res) => {
+    try {
+        const camera = await Camera.findOne({ cameraId: req.params.cameraId });
+        if (!camera) return res.status(404).json({ success: false, message: 'Camera not found' });
+
+        const now = new Date();
+        const expiresAt = new Date(now.getTime() + 10 * 60 * 1000); // 10 min window
+
+        const window = await CaptureWindow.create({
+            windowId: `CW-MANUAL-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+            cameraId: camera.cameraId,
+            roomNumber: camera.roomNumber,
+            semester: req.body.semester || 'manual',
+            branch: req.body.branch || 'manual',
+            subject: req.body.subject || 'Manual Trigger',
+            period: req.body.period || 'P0',
+            date: new Date(now.toDateString()),
+            scheduledAt: now,   // due immediately
+            expiresAt
+        });
+        console.log(`🔧 Manual CaptureWindow created: ${window.windowId} for camera ${camera.cameraId}`);
+        res.json({ success: true, message: 'Capture window created. Camera will snap within its next poll.', windowId: window.windowId });
+    } catch (err) {
+        res.status(500).json({ success: false, message: err.message });
+    }
+});
+
 // ============================================
 // CCTV ATTENDANCE — CAPTURE SCHEDULING
 // ============================================

@@ -277,12 +277,12 @@ function showToast(message, type = 'info') {
 
 // Clear any stale URLs that are no longer valid
 const savedUrl = localStorage.getItem('serverUrl');
-if (savedUrl && (savedUrl.includes('localhost') || savedUrl.includes('192.168') || savedUrl.includes('onrender.com'))) {
+if (savedUrl && (savedUrl.includes('localhost') || savedUrl.includes('192.168'))) {
     console.log(' Clearing old server URL, switching to current server');
     localStorage.removeItem('serverUrl');
 }
 
-const DEFAULT_SERVER_URL = 'https://letsbunk-server.azurewebsites.net';
+const DEFAULT_SERVER_URL = 'https://letsbunk-uw7g.onrender.com';
 let SERVER_URL = localStorage.getItem('serverUrl') || DEFAULT_SERVER_URL;
 
 // Auto-sanitize SERVER_URL to ensure it has http/https protocol prefix and no trailing slash
@@ -2785,6 +2785,7 @@ function renderCctvCameras(cameras) {
             <td>
                 <button class="action-btn edit" onclick="editCctvCamera('${cam.cameraId}', '${(cam.roomNumber || '').replace(/'/g, "\\'")}', '${(cam.label || '').replace(/'/g, "\\'")}', ${cam.isActive})">Edit</button>
                 <button class="action-btn" onclick="regenerateCameraSecret('${cam.cameraId}')">🔑 Secret</button>
+                <button class="action-btn" style="background:#e67e22;color:#fff" onclick="forceTriggerCamera('${cam.cameraId}')">🎯 Trigger</button>
                 <button class="action-btn delete" onclick="deleteCctvCamera('${cam.cameraId}')">Delete</button>
             </td>
         </tr>
@@ -2913,6 +2914,28 @@ async function regenerateCameraSecret(cameraId) {
             showCameraSecretModal(cameraId, data.data.secret);
         } else {
             showNotification(data.message || 'Failed', 'error');
+        }
+    } catch (err) {
+        showNotification('Network error: ' + err.message, 'error');
+    }
+}
+
+async function forceTriggerCamera(cameraId) {
+    if (!confirm(`Force trigger a capture for ${cameraId} RIGHT NOW?\n\nThis creates an immediate 10-minute capture window so the camera will snap on its next poll.`)) return;
+    try {
+        const response = await fetch(`${GET_CCTV_CAMERAS}/${encodeURIComponent(cameraId)}/force-trigger`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({})
+        });
+        if (!response.ok || !response.headers.get('content-type')?.includes('application/json')) {
+            showNotification('Server error triggering capture', 'error'); return;
+        }
+        const data = await response.json();
+        if (data.success) {
+            showNotification('✅ Triggered! Camera will snap within ~30 seconds.', 'success');
+        } else {
+            showNotification(data.message || 'Trigger failed', 'error');
         }
     } catch (err) {
         showNotification('Network error: ' + err.message, 'error');
