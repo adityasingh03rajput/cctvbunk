@@ -2792,8 +2792,31 @@ function renderCctvCameras(cameras) {
     `).join('');
 }
 
-function showAddCameraModal() {
+async function showAddCameraModal() {
     const modalBody = document.getElementById('modalBody');
+
+    // Fetch classrooms for the dropdown
+    let roomOptions = '<option value="">Loading rooms...</option>';
+    try {
+        const res = await fetch(api('/api/classrooms'));
+        if (res.ok) {
+            const data = await res.json();
+            const rooms = data.classrooms || data.data || data || [];
+            if (rooms.length > 0) {
+                roomOptions = '<option value="">— Select Room —</option>' +
+                    rooms.map(r => {
+                        const num = r.roomNumber || r.number || r.name || r;
+                        const label = r.label || r.building ? ` (${r.building || ''})` : '';
+                        return `<option value="${num}">${num}${label}</option>`;
+                    }).join('');
+            } else {
+                roomOptions = '<option value="">No classrooms found — type below</option>';
+            }
+        }
+    } catch (e) {
+        roomOptions = '<option value="">Could not load rooms — type below</option>';
+    }
+
     modalBody.innerHTML = `
         <h2>Add CCTV Camera</h2>
         <form id="cameraForm">
@@ -2803,7 +2826,11 @@ function showAddCameraModal() {
             </div>
             <div class="form-group">
                 <label>Room Number *</label>
-                <input type="text" name="roomNumber" class="form-input" required>
+                <select name="roomNumber" id="roomNumberSelect" class="form-input" required onchange="syncRoomInput(this)">
+                    ${roomOptions}
+                </select>
+                <input type="text" id="roomNumberManual" name="roomNumberManual" class="form-input"
+                    placeholder="Or type room number manually" style="margin-top:6px;">
             </div>
             <div class="form-group">
                 <label>Label</label>
@@ -2812,21 +2839,25 @@ function showAddCameraModal() {
             <button type="submit" class="btn btn-primary">Create Camera</button>
         </form>
     `;
+
     document.getElementById('cameraForm').addEventListener('submit', async (e) => {
         e.preventDefault();
         const fd = new FormData(e.target);
+        // Use manual input if dropdown is empty/default
+        const selectedRoom = fd.get('roomNumber');
+        const manualRoom = (fd.get('roomNumberManual') || '').trim();
+        const roomNumber = (selectedRoom && selectedRoom !== '' && selectedRoom !== '— Select Room —')
+            ? selectedRoom : manualRoom;
+        if (!roomNumber) { showNotification('Please select or enter a room number', 'error'); return; }
         try {
             const response = await fetch(GET_CCTV_CAMERAS, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    cameraId: fd.get('cameraId'),
-                    roomNumber: fd.get('roomNumber'),
-                    label: fd.get('label')
-                })
+                body: JSON.stringify({ cameraId: fd.get('cameraId'), roomNumber, label: fd.get('label') })
             });
             const data = await response.json();
             if (data.success) {
+                closeModal();
                 showCameraSecretModal(data.data.cameraId, data.data.secret);
                 loadCctvCameras();
             } else {
@@ -2837,6 +2868,11 @@ function showAddCameraModal() {
         }
     });
     openModal();
+}
+
+function syncRoomInput(select) {
+    const manual = document.getElementById('roomNumberManual');
+    if (manual) manual.value = select.value !== '' ? '' : manual.value;
 }
 
 // One-time secret reveal
