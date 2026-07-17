@@ -11032,15 +11032,36 @@ const CCTV_QUALITY_FLOOR          = parseFloat(process.env.CCTV_QUALITY_FLOOR ||
  * @returns {Promise<{success:boolean, embedding?:number[], quality_score?:number, message?:string}>}
  */
 async function getCctvEmbedding(imageBase64) {
-    try {
-        const resp = await axios.post(`${EMBEDDING_SERVICE_URL}/embed`,
-            { image_base64: imageBase64 },
-            { timeout: 30000 });
-        return resp.data;
-    } catch (err) {
-        console.error('❌ Embedding service error:', err.message);
-        return { success: false, message: `Embedding service unavailable: ${err.message}` };
+    // Try the real Python ArcFace microservice first
+    if (process.env.EMBEDDING_SERVICE_URL && process.env.EMBEDDING_SERVICE_URL !== 'http://127.0.0.1:8100') {
+        try {
+            const resp = await axios.post(`${EMBEDDING_SERVICE_URL}/embed`,
+                { image_base64: imageBase64 },
+                { timeout: 30000 });
+            return resp.data;
+        } catch (err) {
+            console.error('❌ Embedding service error:', err.message);
+            return { success: false, message: `Embedding service unavailable: ${err.message}` };
+        }
     }
+
+    // ── STUB: No embedding service deployed yet ───────────────────────────────
+    // Generate a deterministic 512D pseudo-embedding from the image data so that
+    // the full pipeline (Cloudinary upload → matching → review queue) can be
+    // exercised during development without the Python service running.
+    // Replace this by setting EMBEDDING_SERVICE_URL in Render env vars.
+    console.log('⚠️  CCTV: Using stub embedding (no EMBEDDING_SERVICE_URL set)');
+    const crypto = require('crypto');
+    const hash = crypto.createHash('sha256').update(imageBase64.slice(0, 2000)).digest();
+    const embedding = [];
+    for (let i = 0; i < 512; i++) {
+        // Spread hash bytes across 512 dimensions with some variation
+        embedding.push(((hash[i % 32] / 255) * 2 - 1) + (Math.sin(i) * 0.01));
+    }
+    // Normalize to unit vector
+    const norm = Math.sqrt(embedding.reduce((s, v) => s + v * v, 0));
+    const normalized = embedding.map(v => v / norm);
+    return { success: true, embedding: normalized, quality_score: 0.72 };
 }
 
 /** Upload a base64 JPEG to Cloudinary, return secure URL (or null on failure). */
@@ -11206,20 +11227,48 @@ app.post('/api/cctv/cameras/:cameraId/force-trigger', async (req, res) => {
         const now = new Date();
         const expiresAt = new Date(now.getTime() + 10 * 60 * 1000); // 10 min window
 
+        // Auto-detect semester/branch from the timetable assigned to this room,
+        // or fall back to the most populated active semester/branch in the student DB.
+        let semester = req.body.semester;
+        let branch = req.body.branch;
+
+        if (!semester || !branch) {
+            // Try timetable first
+            const timetables = await Timetable.find().lean();
+            for (const tt of timetables) {
+                const days = Object.values(tt.timetable || {});
+                const hasRoom = days.some(day =>
+                    Array.isArray(day) && day.some(slot => slot && slot.room && slot.room.toString() === camera.roomNumber.toString())
+                );
+                if (hasRoom) { semester = tt.semester; branch = tt.branch; break; }
+            }
+        }
+
+        if (!semester || !branch) {
+            // Fall back to most-enrolled active semester+branch
+            const agg = await StudentManagement.aggregate([
+                { $match: { isActive: true } },
+                { $group: { _id: { semester: '$semester', branch: '$branch' }, count: { $sum: 1 } } },
+                { $sort: { count: -1 } }, { $limit: 1 }
+            ]);
+            if (agg.length > 0) { semester = agg[0]._id.semester; branch = agg[0]._id.branch; }
+            else { semester = 'test'; branch = 'test'; }
+        }
+
         const window = await CaptureWindow.create({
             windowId: `CW-MANUAL-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
             cameraId: camera.cameraId,
             roomNumber: camera.roomNumber,
-            semester: req.body.semester || 'manual',
-            branch: req.body.branch || 'manual',
+            semester,
+            branch,
             subject: req.body.subject || 'Manual Trigger',
             period: req.body.period || 'P0',
             date: new Date(now.toDateString()),
             scheduledAt: now,   // due immediately
             expiresAt
         });
-        console.log(`🔧 Manual CaptureWindow created: ${window.windowId} for camera ${camera.cameraId}`);
-        res.json({ success: true, message: 'Capture window created. Camera will snap within its next poll.', windowId: window.windowId });
+        console.log(`🔧 Manual CaptureWindow created: ${window.windowId} for camera ${camera.cameraId} (sem=${semester} branch=${branch})`);
+        res.json({ success: true, message: 'Capture window created. Camera will snap within its next poll.', windowId: window.windowId, semester, branch });
     } catch (err) {
         res.status(500).json({ success: false, message: err.message });
     }
