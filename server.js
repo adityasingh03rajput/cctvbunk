@@ -11019,7 +11019,10 @@ const FaceMatchReview = mongoose.model('FaceMatchReview', faceMatchReviewSchema)
 // CCTV ATTENDANCE — EMBEDDING SERVICE CLIENT
 // ============================================
 
-const EMBEDDING_SERVICE_URL = process.env.EMBEDDING_SERVICE_URL || 'http://127.0.0.1:8100';
+const EMBEDDING_SERVICE_URL = process.env.EMBEDDING_SERVICE_URL || 'https://richpic-ai-service.onrender.com';
+const EMBED_SHARED_SECRET   = process.env.EMBED_SHARED_SECRET || '';
+// Set CCTV_USE_STUB=true to force the deterministic stub (pipeline testing without the Python service)
+const CCTV_USE_STUB = process.env.CCTV_USE_STUB === 'true';
 
 // CCTV matching thresholds — tune against real camera/room data before trusting
 // auto-confirm (see rollout plan). Overridable via env.
@@ -11032,25 +11035,28 @@ const CCTV_QUALITY_FLOOR          = parseFloat(process.env.CCTV_QUALITY_FLOOR ||
  * @returns {Promise<{success:boolean, embedding?:number[], quality_score?:number, message?:string}>}
  */
 async function getCctvEmbedding(imageBase64) {
-    // Try the real Python ArcFace microservice first
-    if (process.env.EMBEDDING_SERVICE_URL && process.env.EMBEDDING_SERVICE_URL !== 'http://127.0.0.1:8100') {
+    // Real Python ArcFace service (Render). Falls back to the stub only when
+    // CCTV_USE_STUB=true or the service is unreachable.
+    if (!CCTV_USE_STUB) {
         try {
             const resp = await axios.post(`${EMBEDDING_SERVICE_URL}/embed`,
                 { image_base64: imageBase64 },
-                { timeout: 30000 });
+                {
+                    headers: EMBED_SHARED_SECRET ? { 'x-embed-secret': EMBED_SHARED_SECRET } : {},
+                    // Render free tier cold start: model download/load can take 1-2 min
+                    timeout: 120000
+                });
             return resp.data;
         } catch (err) {
-            console.error('❌ Embedding service error:', err.message);
-            return { success: false, message: `Embedding service unavailable: ${err.message}` };
+            console.error('❌ Embedding service error:', err.message, '— falling back to stub');
         }
     }
 
-    // ── STUB: No embedding service deployed yet ───────────────────────────────
-    // Generate a deterministic 512D pseudo-embedding from the image data so that
-    // the full pipeline (Cloudinary upload → matching → review queue) can be
-    // exercised during development without the Python service running.
-    // Replace this by setting EMBEDDING_SERVICE_URL in Render env vars.
-    console.log('⚠️  CCTV: Using stub embedding (no EMBEDDING_SERVICE_URL set)');
+    // ── STUB fallback ─────────────────────────────────────────────────────────
+    // Deterministic 512D pseudo-embedding from the image data so that the full
+    // pipeline (Cloudinary upload → matching → review queue) can be exercised
+    // without the Python service. NOT usable for real recognition.
+    console.log('⚠️  CCTV: Using stub embedding');
     const crypto = require('crypto');
     const hash = crypto.createHash('sha256').update(imageBase64.slice(0, 2000)).digest();
     const embedding = [];
@@ -11090,11 +11096,25 @@ async function matchCctvEmbedding(embedding, semester, branch, topN = 3) {
     }).select('enrollmentNo name faceEmbeddingCctv').lean();
 
     const scored = [];
+    let skippedDim = 0;
     for (const s of students) {
+        // Dimension guard: the check-in embeddings are 192D — only genuine
+        // 512D CCTV embeddings may enter this pool (cosine on mismatched
+        // lengths silently truncates and produces garbage similarities).
+        if (!Array.isArray(s.faceEmbeddingCctv) || s.faceEmbeddingCctv.length !== embedding.length) {
+            skippedDim++;
+            continue;
+        }
         const r = faceVerificationService.verifyFaceEmbedding(s.faceEmbeddingCctv, embedding, 0);
         if (r.success) {
             scored.push({ enrollmentNo: s.enrollmentNo, name: s.name, similarity: r.similarity });
         }
+    }
+    if (skippedDim > 0) {
+        console.log(`⚠️ CCTV match: skipped ${skippedDim} students with wrong embedding dimension (need ${embedding.length}D — re-enroll or backfill)`);
+    }
+    if (students.length === 0) {
+        console.log(`⚠️ CCTV match: no students in ${semester}/${branch} have faceEmbeddingCctv — run scripts/backfill-cctv-embeddings.js or re-enroll`);
     }
     scored.sort((a, b) => b.similarity - a.similarity);
     return scored.slice(0, topN);
@@ -13779,5 +13799,5 @@ app.get('/api/attendance/all', async (req, res) => {
 
 
 
-
+
 // ============================================

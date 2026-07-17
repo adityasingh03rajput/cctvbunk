@@ -14,7 +14,9 @@ const mongoose = require('mongoose');
 const axios = require('axios');
 
 const MONGODB_URI = process.env.MONGODB_URI || 'mongodb://localhost:27017/attendance_app';
-const EMBEDDING_SERVICE_URL = process.env.EMBEDDING_SERVICE_URL || 'http://127.0.0.1:8100';
+const EMBEDDING_SERVICE_URL = process.env.EMBEDDING_SERVICE_URL || 'https://richpic-ai-service.onrender.com';
+const EMBED_SHARED_SECRET = process.env.EMBED_SHARED_SECRET || '';
+const EMBED_HEADERS = EMBED_SHARED_SECRET ? { 'x-embed-secret': EMBED_SHARED_SECRET } : {};
 const QUALITY_FLOOR = parseFloat(process.env.CCTV_QUALITY_FLOOR || '0.35');
 
 async function main() {
@@ -23,7 +25,7 @@ async function main() {
 
     // Health check embedding service first
     try {
-        await axios.get(`${EMBEDDING_SERVICE_URL}/health`, { timeout: 5000 });
+        await axios.get(`${EMBEDDING_SERVICE_URL}/health`, { timeout: 120000 }); // Render cold start can take minutes
     } catch (e) {
         console.error(`❌ Embedding service not reachable at ${EMBEDDING_SERVICE_URL} — start it first.`);
         process.exit(1);
@@ -46,7 +48,7 @@ async function main() {
         try {
             const imgResp = await axios.get(s.photoUrl, { responseType: 'arraybuffer', timeout: 20000 });
             const imageBase64 = Buffer.from(imgResp.data).toString('base64');
-            const embResp = await axios.post(`${EMBEDDING_SERVICE_URL}/embed`, { image_base64: imageBase64 }, { timeout: 60000 });
+            const embResp = await axios.post(`${EMBEDDING_SERVICE_URL}/embed`, { image_base64: imageBase64 }, { timeout: 120000, headers: EMBED_HEADERS });
             const r = embResp.data;
 
             if (!r.success) {

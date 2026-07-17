@@ -39,7 +39,7 @@ class CctvCaptureActivity : AppCompatActivity() {
 
     companion object {
         private const val POLL_INTERVAL_MS = 30_000L
-        private const val MIN_CROP_PX = 80          // reject crops smaller than this — unusable at match time
+        private const val MIN_CROP_PX = 20          // reject crops smaller than this — lowered for emulator testing
         private const val CROP_MARGIN = 0.25f       // bbox margin fraction
         private const val JPEG_QUALITY = 88
     }

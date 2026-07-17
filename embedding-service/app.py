@@ -4,23 +4,35 @@ CCTV Embedding Service
 Minimal FastAPI service wrapping InsightFace buffalo_l (ArcFace/ResNet50).
 
 One job: receive a face image (base64 JPEG), return a 512D embedding + quality score.
-Called internally by server.js — NOT exposed publicly. Bind to localhost only.
+Called by server.js (Node backend on Render).
 
-Run:
+Deploy on Render (web service):
+    Build command:  pip install -r requirements.txt
+    Start command:  uvicorn app:app --host 0.0.0.0 --port $PORT
+    Env vars:       EMBED_SHARED_SECRET=<same value as on the Node server>
+
+Local run:
     pip install -r requirements.txt
     uvicorn app:app --host 127.0.0.1 --port 8100
+
+Note: buffalo_l models (~280 MB) are downloaded on first startup and cached.
+On Render free tier the first request after a cold start can take 1-2 minutes.
 """
 
 import base64
-import io
 import os
 
 import cv2
 import numpy as np
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, Header, HTTPException
 from pydantic import BaseModel
 
 app = FastAPI(title="CCTV Embedding Service")
+
+# Optional shared secret — since this service is publicly reachable on Render,
+# set EMBED_SHARED_SECRET on BOTH this service and the Node server.
+# If unset, auth is skipped (local development).
+SHARED_SECRET = os.environ.get("EMBED_SHARED_SECRET", "")
 
 # ── Model init (once, at startup) ─────────────────────────────────────────────
 _face_app = None
@@ -39,6 +51,16 @@ def get_face_app():
     return _face_app
 
 
+@app.on_event("startup")
+def warm_up():
+    # Download/load the model at boot rather than on the first request
+    try:
+        get_face_app()
+        print("✅ InsightFace buffalo_l loaded")
+    except Exception as e:
+        print(f"⚠️ Model warm-up failed (will retry on first request): {e}")
+
+
 class EmbedRequest(BaseModel):
     image_base64: str
 
@@ -48,6 +70,11 @@ class EmbedResponse(BaseModel):
     embedding: list[float] | None = None
     quality_score: float = 0.0
     message: str = ""
+
+
+def check_auth(x_embed_secret: str | None):
+    if SHARED_SECRET and x_embed_secret != SHARED_SECRET:
+        raise HTTPException(status_code=401, detail="Invalid or missing x-embed-secret header")
 
 
 def compute_quality(img: np.ndarray, face) -> float:
@@ -75,13 +102,15 @@ def compute_quality(img: np.ndarray, face) -> float:
     return round(0.4 * size_score + 0.3 * det_score + 0.3 * blur_score, 4)
 
 
+@app.get("/")
 @app.get("/health")
 def health():
-    return {"status": "ok"}
+    return {"status": "ok", "model_loaded": _face_app is not None}
 
 
 @app.post("/embed", response_model=EmbedResponse)
-def embed(req: EmbedRequest):
+def embed(req: EmbedRequest, x_embed_secret: str | None = Header(default=None)):
+    check_auth(x_embed_secret)
     try:
         raw = base64.b64decode(req.image_base64)
         arr = np.frombuffer(raw, dtype=np.uint8)
