@@ -1,0 +1,44 @@
+Aditya Singh Rajput Email: adityarajsir162@gmail.com | Phone: +91-94248 31233 | LinkedIn:
+https://www.linkedin.com/in/aditya-singh-rajput-
+63890634b?utm_source=share&utm_campaign=share_via&utm_content=profile&utm_medium=an
+droid_app
+Education
+Bachelor of Technology in Computer Science and Engineering
+Baderia Global Institute of Engineering and Management, Jabalpur
+(Expected Graduation: [2027])
+Relevant Coursework: Web Development, Database Management Systems, Human-Computer
+Interaction
+Skills
+• Web Development: HTML, CSS, JavaScript, React.js, Vue.js, Kotlin, Java
+• Database Management: MongoDb
+• Data Structure and Algorithms: C++
+• Programming: Python, Java, C, C++ , React Native , Kotlin
+• Tools: Git, Visual Studio Code, Vertex AI, Google Collab, Canva , Android Studio
+Experience
+Database Management Project
+• Developed a web database to manage and retrieve information efficiently for a library
+system.
+• Utilized MySQL for database design and JavaScript for front-end integration.
+• Enhanced data retrieval time by implementing optimized queries and indexing.
+Project
+Fine-Tuning Large Language Models for Drug Detection
+• Fine-tuned a pre-trained LLM on domain-specific data to improve accuracy.
+• Used techniques like LoRA, PEFT, and prompt engineering.
+Achievements
+• Top performer at Hacksagon 2025, IIITM
+• Finalist in AI in healthcare, recognized for innovative web-based solutions.
+
+-- 1 of 2 --
+
+• Participated in EduSkills TECH-CAMP on Google Android
+Certifications
+• CS50's Introduction to Computer Science – Harvard University (via edX)
+• Data Visualisation: Empowering Business with Effective Insights – Tata Group (via Forage)
+• Front-End Web Development with React – (via Coursera)
+• Database Design and Management - [Certifying Authority]
+Languages
+• English (Professional Working Proficiency)
+• Hindi (Native Proficiency)
+
+-- 2 of 2 --
+

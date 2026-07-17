@@ -1,0 +1,450 @@
+[
+  {
+    "name": "adityasingh03rajput/mohitwrites",
+    "description": "hm",
+    "visibility": "private",
+    "lastUpdated": "2026-07-02T16:27:28Z",
+    "readmeSummary": "name:\tadityasingh03rajput/mohitwrites\ndescription:\thm\n--\n<div align=\"center\">\n<img width=\"1200\" height=\"475\" alt=\"GHBanner\" src=\"https://ai.google.dev/static/site-assets/images/share-ais-513315318.png\" />\n</div>\n# Run and deploy your AI Studio app\nThis contains everything you need to run your app locally.\nView your app in AI Studio: https://ai.studio/apps/9009ae1a-5880-4b75-8a83-1ec5e35aed11\n## Run Locally\n**Prerequisites:**  Node.js\n1. Install dependencies:\n`npm install`\n2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key\n3. Run the app:"
+  },
+  {
+    "name": "adityasingh03rajput/Offline-bunk",
+    "description": "No description",
+    "visibility": "public",
+    "lastUpdated": "2026-06-30T22:01:56Z",
+    "readmeSummary": "name:\tadityasingh03rajput/Offline-bunk\ndescription:"
+  },
+  {
+    "name": "adityasingh03rajput/testing-server-",
+    "description": "No description",
+    "visibility": "public",
+    "lastUpdated": "2026-06-30T21:58:20Z",
+    "readmeSummary": "name:\tadityasingh03rajput/testing-server-\ndescription:\n--\n# 📱 AttendanceApp-Hybrid\n## 🎯 Project Overview\nThis is a **hybrid attendance tracking application** that combines the best of both worlds:\n- **Android/APK Code**: From the `Attendi` repository (React Native mobile app)\n- **Server & Admin Panel**: From the `attendy` project (Node.js backend + Electron admin panel)\n## 📁 Project Structure\n```\nAttendanceApp-Hybrid/\n├── 📱 MOBILE APP (from Attendi)\n│   ├── android/                 # Android build configuration\n│   ├── App.js                   # Main React Native app\n│   ├── *.js                     # React Native components"
+  },
+  {
+    "name": "adityasingh03rajput/dharagame",
+    "description": "No description",
+    "visibility": "public",
+    "lastUpdated": "2026-06-29T19:59:10Z",
+    "readmeSummary": "name:\tadityasingh03rajput/dharagame\ndescription:\n--\n# FableDevil\nA clean little browser rage-platformer — minimalist look, perfectly planned traps, dark/light themes, and obvious ragebait. **FableDevil** is the prettier, meaner sequel to the classic \"is the floor lying to me?\" formula.\n![Play in browser](https://img.shields.io/badge/play-in%20browser-ffb24d)\n![License](https://img.shields.io/badge/license-MIT-blue)\n## Play\nOpen `index.html` in a browser, or serve the folder locally:\n```bash\nnpx serve .\n# or\npython -m http.server 8080\n```\nThen open `http://localhost:8080`."
+  },
+  {
+    "name": "adityasingh03rajput/khatam-aaj",
+    "description": "No description",
+    "visibility": "public",
+    "lastUpdated": "2026-06-28T20:09:51Z",
+    "readmeSummary": "name:\tadityasingh03rajput/khatam-aaj\ndescription:"
+  },
+  {
+    "name": "adityasingh03rajput/Bunk",
+    "description": "No description",
+    "visibility": "public, fork",
+    "lastUpdated": "2026-06-28T18:42:39Z",
+    "readmeSummary": "name:\tadityasingh03rajput/Bunk\ndescription:\n--\n# 📱 AttendanceApp-Hybrid\n## 🎯 Project Overview\nThis is a **hybrid attendance tracking application** that combines the best of both worlds:\n- **Android/APK Code**: From the `Attendi` repository (React Native mobile app)\n- **Server & Admin Panel**: From the `attendy` project (Node.js backend + Electron admin panel)\n## 📁 Project Structure\n```\nAttendanceApp-Hybrid/\n├── 📱 MOBILE APP (from Attendi)\n│   ├── android/                 # Android build configuration\n│   ├── App.js                   # Main React Native app\n│   ├── *.js                     # React Native components"
+  },
+  {
+    "name": "adityasingh03rajput/bouncer",
+    "description": "bouncer",
+    "visibility": "private",
+    "lastUpdated": "2026-05-31T01:10:42Z",
+    "readmeSummary": "name:\tadityasingh03rajput/bouncer\ndescription:\tbouncer\n--\n<div align=\"center\">\n<img width=\"1200\" height=\"475\" alt=\"GHBanner\" src=\"https://ai.google.dev/static/site-assets/images/share-ais-513315318.png\" />\n</div>\n# Run and deploy your AI Studio app\nThis contains everything you need to run your app locally.\nView your app in AI Studio: https://ai.studio/apps/63613f06-e2b7-41f8-a712-3d66f0577bcd\n## Run Locally\n**Prerequisites:**  [Android Studio](https://developer.android.com/studio)\n1. Open Android Studio\n2. Select **Open** and choose the directory containing this project\n3. Allow Android Studio to fix any incompatibilities as it imports the project.\n4. Create a file named `.env` in the project directory and set `GEMINI_API_KEY` in that file to your Gemini API key (see `.env.example` for an example)"
+  },
+  {
+    "name": "adityasingh03rajput/final-letsbunk",
+    "description": "No description",
+    "visibility": "public",
+    "lastUpdated": "2026-05-23T06:12:39Z",
+    "readmeSummary": "name:\tadityasingh03rajput/final-letsbunk\ndescription:"
+  },
+  {
+    "name": "adityasingh03rajput/Buyworld",
+    "description": "No description",
+    "visibility": "public",
+    "lastUpdated": "2026-05-15T10:27:27Z",
+    "readmeSummary": "name:\tadityasingh03rajput/Buyworld\ndescription:\n--\n# User greeting\nThis is a code bundle for User greeting. The original project is available at https://www.figma.com/design/8kDfc9FZaoTjaerNYFVo5u/User-greeting.\n## Running the code\nRun `npm i` to install the dependencies.\nRun `npm run dev` to start the development server."
+  },
+  {
+    "name": "adityasingh03rajput/BillVyapar",
+    "description": "No description",
+    "visibility": "public",
+    "lastUpdated": "2026-05-02T18:42:29Z",
+    "readmeSummary": "name:\tadityasingh03rajput/BillVyapar\ndescription:\n--\n# Software Requirements Specification (SRS)\nfor\n**Hukum – Business Billing & Document Management System**\nVersion **1.0** approved\nPrepared by: **<author>**\nOrganization: **<organization>**\nDate created: **<date created>**\n## Table of Contents\n- Revision History\n- 1. Introduction\n- 1.1 Purpose\n- 1.2 Document Conventions"
+  },
+  {
+    "name": "adityasingh03rajput/Ssr",
+    "description": "No description",
+    "visibility": "private",
+    "lastUpdated": "2026-04-04T20:21:29Z",
+    "readmeSummary": "name:\tadityasingh03rajput/Ssr\ndescription:\n--\n# Construction Trading Website Design\nThis is a code bundle for Construction Trading Website Design. The original project is available at https://www.figma.com/design/Pp6FUqy4mdarVH8lre7ONo/Construction-Trading-Website-Design.\n## Running the code\nRun `npm i` to install the dependencies.\nRun `npm run dev` to start the development server."
+  },
+  {
+    "name": "adityasingh03rajput/Login",
+    "description": "No description",
+    "visibility": "private",
+    "lastUpdated": "2026-03-25T21:52:09Z",
+    "readmeSummary": "name:\tadityasingh03rajput/Login\ndescription:\n--\n# User greeting\nThis is a code bundle for User greeting. The original project is available at https://www.figma.com/design/ZqjCpZsnACZIjgmJO47zrZ/User-greeting.\n## Running the code\nRun `npm i` to install the dependencies.\nRun `npm run dev` to start the development server."
+  },
+  {
+    "name": "adityasingh03rajput/portfolio",
+    "description": "No description",
+    "visibility": "public",
+    "lastUpdated": "2026-03-24T15:24:59Z",
+    "readmeSummary": "name:\tadityasingh03rajput/portfolio\ndescription:"
+  },
+  {
+    "name": "adityasingh03rajput/timerlogic",
+    "description": "No description",
+    "visibility": "public, fork",
+    "lastUpdated": "2026-03-16T21:10:26Z",
+    "readmeSummary": "name:\tadityasingh03rajput/timerlogic\ndescription:\n--\n# TimerLogic - Advanced Attendance Management System\nA comprehensive React Native mobile application with Node.js backend for automated attendance tracking using timer-based logic and WiFi detection.\n## 🚀 Features\n### Mobile App (React Native + Expo)\n- **Smart Timer System**: Automated attendance tracking with pause/resume functionality\n- **WiFi-Based Detection**: Automatic presence detection using WiFi connectivity\n- **Real-time Synchronization**: Live updates with WebSocket integration\n- **Offline Support**: Works without internet with local data sync\n- **Student Dashboard**: View attendance records, timetables, and statistics\n- **Face Verification**: Secure identity verification (configurable)\n### Admin Panel (Electron Desktop App)\n- **Real-time Monitoring**: Live student timer tracking"
+  },
+  {
+    "name": "adityasingh03rajput/nodecity",
+    "description": "🌆 Transform your codebase into an interactive 3D city - 41+ features including security scanning, code smell detection, team collaboration, and more!",
+    "visibility": "public",
+    "lastUpdated": "2026-03-07T18:35:38Z",
+    "readmeSummary": "name:\tadityasingh03rajput/nodecity\ndescription:\t🌆 Transform your codebase into an interactive 3D city - 41+ features including security scanning, code smell detection, team collaboration, and more!\n--\n# 🌆 NodeCity 3D - Interactive Code Visualization Platform\n[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)\n[![Three.js](https://img.shields.io/badge/Three.js-0.160.0-blue.svg)](https://threejs.org/)\n[![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](http://makeapullrequest.com)\n> Transform your codebase into an interactive 3D city and explore it like never before!\n![NodeCity Banner](https://via.placeholder.com/1200x400/1a2332/818cf8?text=NodeCity+3D+-+Visualize+Your+Code)\n## ✨ Features\n### � Core Visualization\n- **3D City Rendering** - Your code as an interactive 3D city\n- **Smart File Detection** - Auto-categorizes controllers, services, components, utilities\n- **Real-time Metrics** - Live performance and complexity analysis\n- **Day/Night Cycle** - Beautiful lighting with auto/manual toggle"
+  },
+  {
+    "name": "adityasingh03rajput/Chillychills",
+    "description": "No description",
+    "visibility": "public",
+    "lastUpdated": "2026-02-22T21:10:47Z",
+    "readmeSummary": "name:\tadityasingh03rajput/Chillychills\ndescription:\n--\n# User Introduction\nThis is a code bundle for User Introduction. The original project is available at https://www.figma.com/design/iOXQXp0oBRoJv2sxaItV3i/User-Introduction.\n## Running the code\nRun `npm i` to install the dependencies.\nRun `npm run dev` to start the development server."
+  },
+  {
+    "name": "adityasingh03rajput/Hukum",
+    "description": "No description",
+    "visibility": "private",
+    "lastUpdated": "2026-02-22T09:36:14Z",
+    "readmeSummary": "name:\tadityasingh03rajput/Hukum\ndescription:\n--\n# Business Documentation App\nThis is a code bundle for Business Documentation App. The original project is available at https://www.figma.com/design/wZzBtriLUMY2ex4IwBPVvE/Business-Documentation-App.\n## Running the code\nRun `npm i` to install the dependencies.\nRun `npm run dev` to start the development server."
+  },
+  {
+    "name": "adityasingh03rajput/project-mila",
+    "description": "No description",
+    "visibility": "public",
+    "lastUpdated": "2026-02-21T18:13:20Z",
+    "readmeSummary": "name:\tadityasingh03rajput/project-mila\ndescription:"
+  },
+  {
+    "name": "adityasingh03rajput/LetsBunk",
+    "description": "No description",
+    "visibility": "public",
+    "lastUpdated": "2026-02-19T09:11:17Z",
+    "readmeSummary": "name:\tadityasingh03rajput/LetsBunk\ndescription:\n--\n# 📱 AttendanceApp-Hybrid\n## 🎯 Project Overview\nThis is a **hybrid attendance tracking application** that combines the best of both worlds:\n- **Android/APK Code**: From the `Attendi` repository (React Native mobile app)\n- **Server & Admin Panel**: From the `attendy` project (Node.js backend + Electron admin panel)\n## 📁 Project Structure\n```\nAttendanceApp-Hybrid/\n├── 📱 MOBILE APP (from Attendi)\n│   ├── android/                 # Android build configuration\n│   ├── App.js                   # Main React Native app\n│   ├── *.js                     # React Native components"
+  },
+  {
+    "name": "adityasingh03rajput/nazaare",
+    "description": "No description",
+    "visibility": "public",
+    "lastUpdated": "2026-02-18T16:43:42Z",
+    "readmeSummary": "name:\tadityasingh03rajput/nazaare\ndescription:\n--\n# Site Management App with ML-based Verification\nA comprehensive Android application for site enrollment and verification using Machine Learning-powered object detection and image comparison.\n## 🚀 Features\n### 📱 Dual Functionality\n- **Enroll Now**: Capture and enroll site markers using ML object detection\n- **Verify Now**: Real-time verification using image comparison with enrolled data\n### 🤖 ML Integration\n- **Object Detection**: MediaPipe EfficientDet Lite0 for automatic marker detection\n- **Image Embedding**: MobileNet V3 for feature extraction\n- **Image Comparison**: Pixel-by-pixel similarity analysis for verification\n### 🌐 Backend Integration\n- **Node.js Server**: RESTful API for data storage and retrieval"
+  },
+  {
+    "name": "adityasingh03rajput/Production-chale-",
+    "description": "this is a repository that has the latest code in all the terms all the codes are just points",
+    "visibility": "public",
+    "lastUpdated": "2026-02-16T20:14:00Z",
+    "readmeSummary": "name:\tadityasingh03rajput/Production-chale-\ndescription:\tthis is a repository that has the latest code in all the terms all the codes are just points\n--\n# 📱 AttendanceApp-Hybrid\n## 🎯 Project Overview\nThis is a **hybrid attendance tracking application** that combines the best of both worlds:\n- **Android/APK Code**: From the `Attendi` repository (React Native mobile app)\n- **Server & Admin Panel**: From the `attendy` project (Node.js backend + Electron admin panel)\n## 📁 Project Structure\n```\nAttendanceApp-Hybrid/\n├── 📱 MOBILE APP (from Attendi)\n│   ├── android/                 # Android build configuration\n│   ├── App.js                   # Main React Native app\n│   ├── *.js                     # React Native components"
+  },
+  {
+    "name": "adityasingh03rajput/25-jan",
+    "description": "No description",
+    "visibility": "public",
+    "lastUpdated": "2026-01-25T14:55:55Z",
+    "readmeSummary": "name:\tadityasingh03rajput/25-jan\ndescription:\n--\n# 💕 25 Jan - Anniversary Website\nA beautiful romantic website celebrating 25 months of love! ✨\n## 🌟 Features\n- Romantic scroll-based storytelling\n- Beautiful image animations on scroll\n- Interactive YES/NO buttons (NO button runs away! 😄)\n- WhatsApp integration for instant messaging\n- Mobile-optimized for perfect viewing on phones\n- Confetti celebration effect\n## 🚀 Quick Start\n### Prerequisites\n- Node.js installed on your system"
+  },
+  {
+    "name": "adityasingh03rajput/Vision",
+    "description": "No description",
+    "visibility": "public",
+    "lastUpdated": "2026-01-18T18:29:58Z",
+    "readmeSummary": "name:\tadityasingh03rajput/Vision\ndescription:\n--\n# Student Verification System\nA secure, web-based Face Verification system that connects to your MongoDB Atlas database to verify students against their registered profile photos.\n## 🌟 Features\n- **Strict Verification**: Uses DeepFace (Facenet) with OpenCV backend.\n- **Auto-Retry**: Falls back to relaxed detection if strict detection fails.\n- **Dual Mode Live Check**:\n- 📸 **Webcam**: Capture live photos directly in the browser.\n- 📂 **Upload**: Drag & drop support for existing photos.\n- **Instant Lookup**: Fetches student details and reference photo using `Enrollment Number` from MongoDB.\n- **Modern UI**: Glassmorphism design with responsive layout and dark mode.\n## 🛠️ Setup\n1. **Install Dependencies**:"
+  },
+  {
+    "name": "adityasingh03rajput/aksh-bssid",
+    "description": "No description",
+    "visibility": "public",
+    "lastUpdated": "2026-01-13T06:23:23Z",
+    "readmeSummary": "name:\tadityasingh03rajput/aksh-bssid\ndescription:\n--\n# Let's Bunk Server\nReal-time attendance and timetable management server with WebSocket support.\n## Features\n- **Real-time Communication**: WebSocket-based updates using Socket.IO\n- **REST API**: Full CRUD operations for attendance and timetable\n- **BSSID Verification**: Authorized Wi-Fi network validation (192.168.246.31)\n- **Live Timer Updates**: Server-side countdown for all connected students\n- **Multi-client Support**: Multiple teachers and students can connect simultaneously\n## Quick Start\n### Prerequisites\n- Node.js 14+ installed\n- npm or yarn package manager"
+  },
+  {
+    "name": "adityasingh03rajput/Webletsbunk",
+    "description": "No description",
+    "visibility": "private",
+    "lastUpdated": "2026-01-05T10:20:25Z",
+    "readmeSummary": "name:\tadityasingh03rajput/Webletsbunk\ndescription:\n--\n# Create Login Page\nThis is a code bundle for Create Login Page. The original project is available at https://www.figma.com/design/EGOKsMguXVA1poes4giBNF/Create-Login-Page.\n## Running the code\nRun `npm i` to install the dependencies.\nRun `npm run dev` to start the development server."
+  },
+  {
+    "name": "adityasingh03rajput/pahi-ka-paasa",
+    "description": "No description",
+    "visibility": "public",
+    "lastUpdated": "2025-12-13T17:44:20Z",
+    "readmeSummary": "name:\tadityasingh03rajput/pahi-ka-paasa\ndescription:\n--\n# Pahi Ka Paasa 🎲\nA real-time multiplayer number guessing game built with React, Node.js, and Socket.IO. Challenge friends or compete in races to crack the secret 4-digit code!\n## 🎮 Game Features\n- **Real-time Multiplayer**: Play with friends using room codes\n- **Race Mode**: Quick matches with instant gameplay\n- **Friendly Mode**: Private rooms with host approval\n- **Solo Levels**: Practice with different difficulty levels\n- **Power-ups**: Use special abilities to gain advantages\n- **Mobile-First Design**: Optimized for mobile devices\n- **PWA Support**: Install as a native app\n## 🚀 Quick Start\n### Frontend (React App)"
+  },
+  {
+    "name": "adityasingh03rajput/BestDesignWeCanHave",
+    "description": "No description",
+    "visibility": "private",
+    "lastUpdated": "2025-12-13T10:25:23Z",
+    "readmeSummary": "name:\tadityasingh03rajput/BestDesignWeCanHave\ndescription:\n--\n# User Greeting\nThis is a code bundle for User Greeting. The original project is available at https://www.figma.com/design/p69KPoUQqmWMzWatZSJY3D/User-Greeting.\n## Running the code\nRun `npm i` to install the dependencies.\nRun `npm run dev` to start the development server."
+  },
+  {
+    "name": "adityasingh03rajput/akhri_raat_kaam",
+    "description": "No description",
+    "visibility": "public",
+    "lastUpdated": "2025-12-10T22:18:24Z",
+    "readmeSummary": "name:\tadityasingh03rajput/akhri_raat_kaam\ndescription:"
+  },
+  {
+    "name": "adityasingh03rajput/offline-face-verification",
+    "description": "taking image data for letsbunk",
+    "visibility": "public, fork",
+    "lastUpdated": "2025-12-06T18:57:14Z",
+    "readmeSummary": "name:\tadityasingh03rajput/offline-face-verification\ndescription:\ttaking image data for letsbunk\n--\n# Face Capture System\nA simple web application to capture face images with enrollment numbers using face detection.\n## Setup\n1. Install dependencies:\n```\nnpm install\n```\n2. Start the server:\n```\nnpm start\n```\n3. Open your browser and go to:"
+  },
+  {
+    "name": "adityasingh03rajput/letsbunk03",
+    "description": "No description",
+    "visibility": "private",
+    "lastUpdated": "2025-11-18T15:07:06Z",
+    "readmeSummary": "name:\tadityasingh03rajput/letsbunk03\ndescription:\n--\n# letsbunk03"
+  },
+  {
+    "name": "adityasingh03rajput/cool-satifying",
+    "description": "No description",
+    "visibility": "private",
+    "lastUpdated": "2025-11-15T13:20:47Z",
+    "readmeSummary": "name:\tadityasingh03rajput/cool-satifying\ndescription:"
+  },
+  {
+    "name": "adityasingh03rajput/native-bunk",
+    "description": "this repo is for the latest work where i have sucessfully created react native server ui hahahaha .",
+    "visibility": "public",
+    "lastUpdated": "2025-11-13T23:08:28Z",
+    "readmeSummary": "name:\tadityasingh03rajput/native-bunk\ndescription:\tthis repo is for the latest work where i have sucessfully created react native server ui hahahaha .\n--\n# College Attendance System\nA comprehensive attendance management system with face recognition, real-time tracking, and admin panel.\n## Features\n- 📱 **Mobile App** (React Native/Expo)\n- Student & Teacher login\n- Face verification for attendance\n- Real-time attendance tracking\n- Timetable view\n- Attendance history & statistics\n- Digital lanyard card\n- Push notifications\n- 🖥️ **Admin Panel** (Electron)"
+  },
+  {
+    "name": "adityasingh03rajput/Fluidsimulationlogoanimation",
+    "description": "No description",
+    "visibility": "private",
+    "lastUpdated": "2025-11-13T15:02:50Z",
+    "readmeSummary": "name:\tadityasingh03rajput/Fluidsimulationlogoanimation\ndescription:\n--\n# Fluid Simulation Logo Animation\nThis is a code bundle for Fluid Simulation Logo Animation. The original project is available at https://www.figma.com/design/rXfn0FeMslvi8KkPlPyI5M/Fluid-Simulation-Logo-Animation.\n## Running the code\nRun `npm i` to install the dependencies.\nRun `npm run dev` to start the development server."
+  },
+  {
+    "name": "adityasingh03rajput/meri-ungli",
+    "description": "No description",
+    "visibility": "public",
+    "lastUpdated": "2025-10-03T10:35:14Z",
+    "readmeSummary": "name:\tadityasingh03rajput/meri-ungli\ndescription:\n--\n# Meri Ungli - Enhanced Biometric Authentication System\nA complete biometric authentication system with enhanced multi-angle fingerprint and camera-based face recognition, featuring Node.js backend and Android app using Kotlin.\n## 🚀 Features\n### 🔐 Enhanced Fingerprint Authentication\n- **Multi-Angle Registration**: 5-step fingerprint capture from different angles\n- **Comprehensive Coverage**: Center, left tilt, right tilt, finger tip, and lower area\n- **Enhanced Security**: Better recognition accuracy with more finger surface area\n- **Guided Process**: Step-by-step instructions for each scan position\n### 📷 Camera-Based Face Authentication\n- **Real Camera Capture**: Uses device camera for actual face photos\n- **Live Preview**: Full-screen camera preview during registration/login\n- **Image Processing**: Optimized image compression and Base64 encoding"
+  },
+  {
+    "name": "adityasingh03rajput/adioncode",
+    "description": "No description",
+    "visibility": "public",
+    "lastUpdated": "2025-09-30T18:25:51Z",
+    "readmeSummary": "name:\tadityasingh03rajput/adioncode\ndescription:\n--\n# INTROVERT - Anonymous Social Platform\n🚀 **Next-Generation Anonymous Social Connection Platform**\nINTROVERT is a modern, AI-powered anonymous social platform that enables genuine connections without the pressure of identity. Built with cutting-edge web technologies, it provides a safe space for authentic conversations, creative collaboration, and meaningful human connections.\n## ✨ Features\n### 🤖 AI-Powered Features\n- **Smart Replies**: Intelligent conversation suggestions powered by advanced AI\n- **Real-time Translation**: Break language barriers with instant message translation\n- **Content Moderation**: AI-powered filtering for a safe environment\n### 🎯 Social Features\n- **Anonymous Chatting**: Complete privacy protection\n- **Random Matching**: Connect with strangers based on preferences\n- **Private Rooms**: Create custom chat rooms"
+  },
+  {
+    "name": "adityasingh03rajput/dermy_buddy",
+    "description": "No description",
+    "visibility": "private",
+    "lastUpdated": "2025-09-17T08:33:26Z",
+    "readmeSummary": "name:\tadityasingh03rajput/dermy_buddy\ndescription:\n--\n# dermy_buddy"
+  },
+  {
+    "name": "adityasingh03rajput/janubabu",
+    "description": "No description",
+    "visibility": "private",
+    "lastUpdated": "2025-09-14T18:07:23Z",
+    "readmeSummary": "name:\tadityasingh03rajput/janubabu\ndescription:\n--\njanubabu"
+  },
+  {
+    "name": "adityasingh03rajput/dadusecurity",
+    "description": "No description",
+    "visibility": "public",
+    "lastUpdated": "2025-09-11T22:26:50Z",
+    "readmeSummary": "name:\tadityasingh03rajput/dadusecurity\ndescription:\n--\n# dadusecurity"
+  },
+  {
+    "name": "adityasingh03rajput/lost-person-finder",
+    "description": "A web-based system for reporting and finding missing persons using facial recognition technology",
+    "visibility": "public",
+    "lastUpdated": "2025-08-02T10:15:58Z",
+    "readmeSummary": "name:\tadityasingh03rajput/lost-person-finder\ndescription:\tA web-based system for reporting and finding missing persons using facial recognition technology\n--\n# Lost Person Finder\nA web-based system for reporting and finding missing persons using facial recognition technology. This system helps reunite families by allowing users to report missing persons, found persons, and search through a database of photos.\n## 🚀 Features\n- **Missing Person Reports**: Submit detailed reports with photos and personal information\n- **Found Person Reports**: Report found individuals to help identify them\n- **Photo Search**: Upload photos to search for matches in the database\n- **Dashboard**: Real-time statistics and recent reports overview\n- **REST API**: Complete API for integration with other systems\n- **Facial Recognition**: AI-powered photo matching (coming soon)\n## 📋 Prerequisites\n- Python 3.8 or higher\n- pip (Python package installer)"
+  },
+  {
+    "name": "adityasingh03rajput/adion-wall",
+    "description": "No description",
+    "visibility": "public",
+    "lastUpdated": "2025-07-25T13:10:25Z",
+    "readmeSummary": "name:\tadityasingh03rajput/adion-wall\ndescription:\n--\n# adion-wall"
+  },
+  {
+    "name": "adityasingh03rajput/wall-chess",
+    "description": "No description",
+    "visibility": "public",
+    "lastUpdated": "2025-07-24T21:03:35Z",
+    "readmeSummary": "name:\tadityasingh03rajput/wall-chess\ndescription:\n--\n# wall-chess"
+  },
+  {
+    "name": "adityasingh03rajput/wall-path-duels",
+    "description": "No description",
+    "visibility": "public",
+    "lastUpdated": "2025-07-24T18:23:17Z",
+    "readmeSummary": "name:\tadityasingh03rajput/wall-path-duels\ndescription:\n--\n# Welcome to your Lovable project\n## Project info\n**URL**: https://lovable.dev/projects/dc6ac42b-5907-4ba1-844d-56c41dcedee0\n## How can I edit this code?\nThere are several ways of editing your application.\n**Use Lovable**\nSimply visit the [Lovable Project](https://lovable.dev/projects/dc6ac42b-5907-4ba1-844d-56c41dcedee0) and start prompting.\nChanges made via Lovable will be committed automatically to this repo.\n**Use your preferred IDE**\nIf you want to work locally using your own IDE, you can clone this repo and push changes. Pushed changes will also be reflected in Lovable.\nThe only requirement is having Node.js & npm installed - [install with nvm](https://github.com/nvm-sh/nvm#installing-and-updating)\nFollow these steps:"
+  },
+  {
+    "name": "adityasingh03rajput/deadball",
+    "description": "No description",
+    "visibility": "private",
+    "lastUpdated": "2025-07-22T22:28:58Z",
+    "readmeSummary": "name:\tadityasingh03rajput/deadball\ndescription:\n--\n# deadball"
+  },
+  {
+    "name": "adityasingh03rajput/pagaar",
+    "description": "No description",
+    "visibility": "private",
+    "lastUpdated": "2025-07-21T11:00:14Z",
+    "readmeSummary": "name:\tadityasingh03rajput/pagaar\ndescription:\n--\n# pagaar"
+  },
+  {
+    "name": "adityasingh03rajput/itsover",
+    "description": "No description",
+    "visibility": "private",
+    "lastUpdated": "2025-07-20T15:51:31Z",
+    "readmeSummary": "name:\tadityasingh03rajput/itsover\ndescription:\n--\n# Flutter\nA modern Flutter-based anonymous dating and gaming application utilizing the latest mobile development technologies and tools for building responsive cross-platform applications.\n## 📋 Prerequisites\n- Flutter SDK (^3.24.0)\n- Dart SDK\n- Android Studio / VS Code with Flutter extensions\n- Android SDK / Xcode (for iOS development)\n## 🛠️ Installation\n1. Install dependencies:\n```bash\nflutter pub get\n```"
+  },
+  {
+    "name": "adityasingh03rajput/admin-dashboard",
+    "description": "No description",
+    "visibility": "private",
+    "lastUpdated": "2025-07-20T08:28:49Z",
+    "readmeSummary": "name:\tadityasingh03rajput/admin-dashboard\ndescription:"
+  },
+  {
+    "name": "adityasingh03rajput/ar_commerce_studio",
+    "description": "No description",
+    "visibility": "private",
+    "lastUpdated": "2025-07-18T13:52:20Z",
+    "readmeSummary": "name:\tadityasingh03rajput/ar_commerce_studio\ndescription:\n--\n# React\nA modern React-based project utilizing the latest frontend technologies and tools for building responsive web applications.\n## 🚀 Features\n- **React 18** - React version with improved rendering and concurrent features\n- **Vite** - Lightning-fast build tool and development server\n- **Redux Toolkit** - State management with simplified Redux setup\n- **TailwindCSS** - Utility-first CSS framework with extensive customization\n- **React Router v6** - Declarative routing for React applications\n- **Data Visualization** - Integrated D3.js and Recharts for powerful data visualization\n- **Form Management** - React Hook Form for efficient form handling\n- **Animation** - Framer Motion for smooth UI animations\n- **Testing** - Jest and React Testing Library setup"
+  },
+  {
+    "name": "adityasingh03rajput/e.i.o.t.",
+    "description": "No description",
+    "visibility": "private",
+    "lastUpdated": "2025-07-18T11:02:30Z",
+    "readmeSummary": "name:\tadityasingh03rajput/e.i.o.t.\ndescription:\n--\n# AI-Driven Virtual Try-On Solution\nA comprehensive browser extension and web application that enables users to virtually try on clothing items using advanced AI, computer vision, and 3D rendering technologies.\n## 🚀 Features\n### Core Functionality\n- **AI-Powered Body Analysis**: Upload 3 photos and get accurate body measurements\n- **3D Avatar Generation**: Create personalized 3D avatars from user images\n- **Virtual Try-On**: See how clothes fit on your 3D avatar in real-time\n- **AR Experience**: Place your avatar in real-world environments using WebXR\n- **Cross-Platform**: Works on desktop and mobile devices\n- **E-commerce Integration**: Browser extension for major fashion platforms\n### Advanced Features\n- **Multi-View Analysis**: Process front, side, and back images for accurate measurements"
+  },
+  {
+    "name": "adityasingh03rajput/1june",
+    "description": "No description",
+    "visibility": "private",
+    "lastUpdated": "2025-07-10T08:41:10Z",
+    "readmeSummary": "name:\tadityasingh03rajput/1june\ndescription:"
+  },
+  {
+    "name": "adityasingh03rajput/real-car",
+    "description": "No description",
+    "visibility": "private",
+    "lastUpdated": "2025-07-09T10:09:26Z",
+    "readmeSummary": "name:\tadityasingh03rajput/real-car\ndescription:\n--\n# real-car"
+  },
+  {
+    "name": "adityasingh03rajput/DEADIBALL",
+    "description": "No description",
+    "visibility": "private",
+    "lastUpdated": "2025-06-28T22:53:05Z",
+    "readmeSummary": "name:\tadityasingh03rajput/DEADIBALL\ndescription:\n--\n# DEADIBALL"
+  },
+  {
+    "name": "adityasingh03rajput/updatebunk",
+    "description": "No description",
+    "visibility": "private",
+    "lastUpdated": "2025-06-01T20:59:01Z",
+    "readmeSummary": "name:\tadityasingh03rajput/updatebunk\ndescription:\n--\n# updatebunk"
+  },
+  {
+    "name": "adityasingh03rajput/testbunk",
+    "description": "No description",
+    "visibility": "private",
+    "lastUpdated": "2025-05-25T00:02:45Z",
+    "readmeSummary": "name:\tadityasingh03rajput/testbunk\ndescription:\n--\n# testbunk"
+  },
+  {
+    "name": "adityasingh03rajput/Pranav",
+    "description": "No description",
+    "visibility": "private",
+    "lastUpdated": "2025-05-22T15:59:04Z",
+    "readmeSummary": "name:\tadityasingh03rajput/Pranav\ndescription:\n--\n# Pranav"
+  },
+  {
+    "name": "adityasingh03rajput/lets_bunk",
+    "description": "No description",
+    "visibility": "public",
+    "lastUpdated": "2025-04-29T11:23:43Z",
+    "readmeSummary": "name:\tadityasingh03rajput/lets_bunk\ndescription:\n--\n# lets_bunk"
+  },
+  {
+    "name": "adityasingh03rajput/dermy-buddy",
+    "description": "No description",
+    "visibility": "public",
+    "lastUpdated": "2025-03-24T17:59:32Z",
+    "readmeSummary": "name:\tadityasingh03rajput/dermy-buddy\ndescription:\n--\n# dermy_buddy"
+  },
+  {
+    "name": "adityasingh03rajput/letsbunk2",
+    "description": "No description",
+    "visibility": "public",
+    "lastUpdated": "2025-03-24T17:35:10Z",
+    "readmeSummary": "name:\tadityasingh03rajput/letsbunk2\ndescription:\n--\n# lets-bunk"
+  },
+  {
+    "name": "adityasingh03rajput/lets-bunk",
+    "description": "No description",
+    "visibility": "public",
+    "lastUpdated": "2025-03-23T12:44:17Z",
+    "readmeSummary": "name:\tadityasingh03rajput/lets-bunk\ndescription:\n--\n# lets-bunk"
+  },
+  {
+    "name": "adityasingh03rajput/codered",
+    "description": "No description",
+    "visibility": "private",
+    "lastUpdated": "2025-03-22T18:26:30Z",
+    "readmeSummary": "name:\tadityasingh03rajput/codered\ndescription:\n--\n# codered"
+  },
+  {
+    "name": "adityasingh03rajput/drug",
+    "description": "No description",
+    "visibility": "public",
+    "lastUpdated": "2025-03-11T18:13:10Z",
+    "readmeSummary": "name:\tadityasingh03rajput/drug\ndescription:\n--\n# 🧪 Drug Detection Machine\n![GitHub](https://img.shields.io/github/license/your-username/drug-detection-machine?color=blue)\n![GitHub last commit](https://img.shields.io/github/last-commit/your-username/drug-detection-machine?color=green)\n![GitHub repo size](https://img.shields.io/github/repo-size/your-username/drug-detection-machine?color=orange)\n![Python](https://img.shields.io/badge/Python-3.8%2B-blue?logo=python)\nWelcome to the **Drug Detection Machine**! This project is designed to analyze microscopic images of substances, predict whether they are drugs, and identify their molecular structure using advanced deep learning and molecular databases.\n---\n## 🚀 **Features**\n- **Image Analysis**: Upload a microscopic image, and the system will analyze it using a pre-trained deep learning model.\n- **Drug Identification**: Match the image features with molecular databases like PubChem to identify the drug.\n- **Non-Drug Classification**: Classify non-drug substances (e.g., water, contaminants) with confidence scores.\n- **Molecular Details**: Display detailed molecular information (e.g., structure, formula) for identified drugs."
+  },
+  {
+    "name": "adityasingh03rajput/drugy_buddy",
+    "description": "No description",
+    "visibility": "public",
+    "lastUpdated": "2025-03-10T16:06:40Z",
+    "readmeSummary": "name:\tadityasingh03rajput/drugy_buddy\ndescription:"
+  },
+  {
+    "name": "adityasingh03rajput/introdrug",
+    "description": "No description",
+    "visibility": "public",
+    "lastUpdated": "2025-03-09T09:36:53Z",
+    "readmeSummary": "name:\tadityasingh03rajput/introdrug\ndescription:\n--\n# introdrug"
+  },
+  {
+    "name": "adityasingh03rajput/death-goal",
+    "description": "No description",
+    "visibility": "private",
+    "lastUpdated": "2025-03-08T07:47:49Z",
+    "readmeSummary": "name:\tadityasingh03rajput/death-goal\ndescription:\n--\n# deadball"
+  },
+  {
+    "name": "adityasingh03rajput/derm-ai",
+    "description": "Machine Learning for Skin Disease Classification",
+    "visibility": "public, fork",
+    "lastUpdated": "2021-06-25T05:32:38Z",
+    "readmeSummary": "name:\tadityasingh03rajput/derm-ai\ndescription:\tMachine Learning for Skin Disease Classification\n--\n# DermAI\nDeep convolutional network to predict 23 classes of skin diseases found in http://www.dermnet.com/dermatology-pictures-skin-disease-pictures from raw images. We make use of a pretrained ResNet152 since many visual semantics like edges or object shapes should be transferrable from Imagenet. We append 2 fully connected layers to fine-tune for our use case.\nThis project is an entry to API World Hackathon 2017.\n## Installation\nRun the `setup.sh` script to download raw images and ResNet152 embeddings. The script will also download a trained model (this is a 2-fully-connected network stacked on top of ResNet152). Unzipping the files should produce the following folders: `train/`, `test/`, `train_emb/`, `test_emb/`. `trained_models` includes a trained version of the fine-tune net with 0.53 percent accuracy on held-out test data.\nTo install all the libraries needed, run `pip install -r requirements.txt`.\n## Instructions\nTo start the Flask app, do `python run.py`. There is a single POST route (`/predict`) that takes a JSON from key `image` to a base64 encoded image. It will return a `class` and a `score`."
+  }
+]

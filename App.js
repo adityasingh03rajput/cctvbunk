@@ -1,0 +1,9498 @@
+import React, { useState, useEffect, useRef } from 'react';
+import {
+  StyleSheet, Text, View, TouchableOpacity, ActivityIndicator,
+  Animated, TextInput, ScrollView, FlatList, AppState, useColorScheme, Image, Modal, RefreshControl, PermissionsAndroid, Platform, Alert, NativeModules, Vibration
+} from 'react-native';
+import { StatusBar } from 'expo-status-bar';
+import { Audio } from 'expo-av';
+import Constants from 'expo-constants';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import io from 'socket.io-client';
+import { RTCPeerConnection, RTCIceCandidate, RTCSessionDescription } from 'react-native-webrtc';
+import OfflineTimerService from './OfflineTimerService';
+import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
+import BottomNavigation from './BottomNavigation';
+import CalendarScreen from './CalendarScreen';
+import ProfileScreen from './ProfileScreen';
+import TimetableScreen from './TimetableScreen';
+import NotificationsScreen from './NotificationsScreen';
+import LanyardCard from './LanyardCard';
+import { SunIcon, MoonIcon, LogoutIcon, RefreshIcon } from './Icons';
+import { initializeServerTime, getServerTime } from './ServerTime';
+import FloatingBrandButton from './FloatingBrandButton';
+// New Teacher UI Components
+import TeacherHeader from './TeacherHeader';
+import StudentList from './StudentList';
+import StudentProfileDialog from './StudentProfileDialog';
+import TeacherProfileDialog from './TeacherProfileDialog';
+import RandomRingDialog from './RandomRingDialog';
+import TimetableSelector from './TimetableSelector';
+import ViewRecords from './ViewRecords';
+import Notifications from './Notifications';
+import Updates from './Updates';
+import HelpAndSupport from './HelpAndSupport';
+import Feedback from './Feedback';
+import SemesterSelector from './SemesterSelector';
+import WiFiManager from './WiFiManager';
+import NativeWiFiService from './NativeWiFiService';
+import LanP2PService from './services/LanP2PService';
+import TestBSSID from './TestBSSID';
+import SecurityStatusIndicator from './SecurityStatusIndicator';
+// WiFi BSSID Integration from LetsBunk
+import SecureStorage from './SecureStorage';
+import BSSIDStorage from './BSSIDStorage';
+// Face Verification Module
+import FaceVerification from './FaceVerification';
+import CircularTimer from './CircularTimer';
+import { requestStartupPermissions } from './PermissionManager';
+import LoginScreen from './LoginScreen';
+import SplashScreenView from './SplashScreen';
+import { showToast, ToastContainer } from './Toast';
+
+// Configuration - Import from centralized config
+import { SERVER_BASE_URL, API_URL as CONFIG_API_URL, SOCKET_URL as CONFIG_SOCKET_URL } from './config';
+
+import { GET_ATTENDANCE_RECORDS, GET_ATTENDANCE_STATS, GET_CONFIG_APP, GET_DAILY_BSSID_SCHEDULE, GET_HEALTH, GET_STUDENT_MANAGEMENT, GET_STUDENT_VALIDATE, GET_TEACHER_CURRENT_CLASS_STUDENTS, GET_TIMETABLE_BY_SEMESTER_BRANCH, GET_VIEW_RECORDS_STUDENTS, POST_ATTENDANCE_MANUAL_MARK, POST_ATTENDANCE_OFFLINE_SYNC, POST_ATTENDANCE_PERIOD_SYNC, POST_ATTENDANCE_RANDOM_RING_RESPONSE, POST_ATTENDANCE_RECORD, POST_LOGIN, POST_RANDOM_RING, POST_RANDOM_RING_TEACHER_ACTION, POST_RANDOM_RING_VERIFY_AFTER_REJECTION, POST_RANDOM_RING_VERIFY_DIRECT, POST_REFRESH_PROFILE, POST_TIMETABLE, POST_TIMETABLE_UPDATE_ROOM, GET_CLASSROOMS, POST_LEAVES_APPLY } from './constants/apiEndpoints';
+// Use Constants.expoConfig.extra for environment variables in Expo SDK 51
+const API_URL = Constants.expoConfig?.extra?.EXPO_PUBLIC_API_URL || CONFIG_API_URL;
+const SOCKET_URL = Constants.expoConfig?.extra?.EXPO_PUBLIC_SOCKET_URL || CONFIG_SOCKET_URL;
+
+// Constants
+const CACHE_KEY = '@timer_config';
+const ROLE_KEY = '@user_role';
+const STUDENT_ID_KEY = '@student_id';
+const STUDENT_NAME_KEY = '@student_name';
+const SEMESTER_KEY = '@user_semester';
+const BRANCH_KEY = '@user_branch';
+
+// Timing constants (in milliseconds)
+const HEARTBEAT_INTERVAL = 5 * 60 * 1000; // 5 minutes
+const INITIAL_HEARTBEAT_DELAY = 60 * 1000; // 1 minute
+const HEALTH_CHECK_TIMEOUT = 5000; // 5 seconds
+const WIFI_CHECK_INTERVAL = 30000; // 30 seconds
+
+// WebRTC config — empty iceServers forces host (LAN) candidates on same subnet.
+// STUN is not needed for classroom Wi-Fi and fails when internet is unavailable.
+const RTC_CONFIG = {
+  iceServers: [],
+  iceCandidatePoolSize: 4,
+  bundlePolicy: 'max-bundle',
+};
+const USER_DATA_KEY = '@user_data';
+const LOGIN_ID_KEY = '@login_id';
+const THEME_KEY = '@app_theme';
+const DAILY_VERIFICATION_KEY = '@daily_verification';
+
+// Initialize ServerTime at module load so getServerTime() never throws before useEffect runs
+initializeServerTime(SOCKET_URL);
+
+const normalizeStudentUserData = (user) => {
+  if (!user || user.role !== 'student') return user;
+  const normalizedBranch = user.branch ?? user.course ?? '';
+  const normalizedSemester = user.semester != null ? user.semester.toString() : '';
+  return {
+    ...user,
+    branch: normalizedBranch,
+    course: normalizedBranch,
+    semester: normalizedSemester,
+  };
+};
+
+// ── Spoof-proof monotonic clock (time since device boot) ─────────────────────
+// Uses SystemClock.elapsedRealtime() via TimerModule — cannot be changed by
+// adjusting device date/time. Falls back to Date.now() only if native unavailable.
+const { TimerModule: _NativeTimerModule } = NativeModules;
+let _appBootMsCache = 0;
+let _appBootMsCacheAt = 0;
+async function _refreshAppBootCache() {
+  try {
+    if (_NativeTimerModule && _NativeTimerModule.getBootElapsedMs) {
+      const { bootElapsedMs } = await _NativeTimerModule.getBootElapsedMs();
+      _appBootMsCache = bootElapsedMs;
+      _appBootMsCacheAt = Date.now();
+    }
+  } catch (_) { }
+}
+function _appGetBootMs() {
+  if (_appBootMsCache > 0) {
+    return _appBootMsCache + Math.max(0, Date.now() - _appBootMsCacheAt);
+  }
+  return Date.now(); // fallback only if native unavailable
+}
+// Warm up cache immediately on module load
+_refreshAppBootCache();
+
+// Theme colors
+const THEMES = {
+  // ── Warm (matches login repo color palette) ───────────────────
+  warm: {
+    background: '#E8DCC4',
+    cardBackground: '#DDD0B3',
+    text: '#030213',
+    textSecondary: 'rgba(3,2,19,0.6)',
+    primary: '#030213',
+    border: 'rgba(0,0,0,0.1)',
+    statusBar: 'dark',
+    label: 'Warm',
+    emoji: '☀️',
+  },
+
+  // ── Night (black/grey dark mode) ──────────────────────────────
+  night: {
+    background: '#111111',
+    cardBackground: '#1e1e1e',
+    text: '#f0f0f0',
+    textSecondary: '#9a9a9a',
+    primary: '#ffffff',
+    border: '#333333',
+    statusBar: 'light',
+    label: 'Night',
+    emoji: '🌙',
+  },
+};
+
+const THEME_GROUPS = [
+  { label: '☀️ Warm', keys: ['warm'] },
+  { label: '🌙 Night', keys: ['night'] },
+];
+
+const getDefaultConfig = () => ({
+  roleSelection: {
+    backgroundColor: '#E8DCC4',
+    title: { text: 'Who are you?', fontSize: 36, color: '#030213', fontWeight: 'bold' },
+    subtitle: { text: 'Select your role to continue', fontSize: 16, color: '#00d9ff' },
+    roles: [
+      { id: 'student', text: 'Student', icon: '🎓', backgroundColor: '#00d9ff', textColor: '#0a1628' },
+      { id: 'teacher', text: 'Teacher', icon: '👨‍🏫', backgroundColor: '#00bfff', textColor: '#0a1628' }
+    ]
+  },
+  studentNameInput: {
+    backgroundColor: '#0a1628',
+    title: { text: 'Enter Your Name', fontSize: 32, color: '#00f5ff', fontWeight: 'bold' },
+    subtitle: { text: 'This will be visible to your teacher', fontSize: 14, color: '#00d9ff' },
+    placeholder: 'Your Name',
+    buttonText: 'START SESSION',
+    inputBackgroundColor: '#0d1f3c',
+    inputTextColor: '#00f5ff',
+    inputBorderColor: '#00d9ff'
+  },
+  studentScreen: {
+    backgroundColor: '#0a1628',
+    title: { text: 'Countdown Timer', fontSize: 32, color: '#00f5ff', fontWeight: 'bold' },
+    timer: { duration: 120, backgroundColor: '#0d1f3c', textColor: '#00f5ff', fontSize: 72, borderRadius: 20 },
+    buttons: [
+      { id: 'startPause', text: 'START', pauseText: 'PAUSE', backgroundColor: '#00f5ff', textColor: '#0a1628', fontSize: 18 },
+      { id: 'reset', text: 'RESET', backgroundColor: '#00d9ff', textColor: '#0a1628', fontSize: 18 }
+    ]
+  },
+  teacherScreen: {
+    backgroundColor: '#0a1628',
+    title: { text: 'Live Attendance', fontSize: 32, color: '#00f5ff', fontWeight: 'bold' },
+    subtitle: { text: 'Real-time student tracking', fontSize: 16, color: '#00d9ff' },
+    statusColors: { attending: '#00ff88', absent: '#ff4444', present: '#00d9ff' },
+    cardBackgroundColor: '#0d1f3c',
+    cardBorderColor: '#00d9ff'
+  }
+});
+
+export default function App() {
+  const [config, setConfig] = useState(getDefaultConfig());
+  const [selectedRole, setSelectedRole] = useState(null);
+  const [studentName, setStudentName] = useState('');
+  const [studentId, setStudentId] = useState(null);
+  const [showNameInput, setShowNameInput] = useState(false);
+  const [students, setStudents] = useState([]);
+
+  const [semester, setSemester] = useState(null);
+  const [branch, setBranch] = useState(null);
+
+  // Timer state (deprecated - kept for compatibility with period-based system)
+  const [isRunning] = useState(false); // Always false in period-based system
+
+  // Party popper state — shown when attendance threshold is reached
+  const [showPartyPopper, setShowPartyPopper] = useState(false);
+  const prevAttendanceStatus = useRef(null);
+
+  // Offline Timer Service state
+  const [offlineTimerState, setOfflineTimerState] = useState({
+    isRunning: false,
+    isPaused: false,
+    timerSeconds: 0,
+    currentLecture: null,
+    isOnline: true,
+    hasInternetConnection: true,
+    isConnectedToAuthorizedWiFi: false,
+    lastSyncTime: null,
+    queuedSyncs: 0,
+    pendingSyncCount: 0,
+    __pending_sync: 0
+  });
+  const [offlineTimerInitialized, setOfflineTimerInitialized] = useState(false);
+  
+  // Segment timer data for CircularTimer (timer data for each period)
+  const [segmentTimerData, setSegmentTimerData] = useState(null);
+  
+  // Current period number (1-based) for CircularTimer highlighting
+  const [currentPeriodNumber, setCurrentPeriodNumber] = useState(null);
+  
+  // Past period viewing mode - when user taps a segment to see past timer data
+  const [viewingPastPeriod, setViewingPastPeriod] = useState(false);
+  const [pastPeriodData, setPastPeriodData] = useState(null);
+
+  // Fire party popper when attendance status transitions to 'present'
+  useEffect(() => {
+    const current = offlineTimerState.attendanceStatus;
+    if (current === 'present' && prevAttendanceStatus.current !== 'present') {
+      setShowPartyPopper(true);
+      const hideTimer = setTimeout(() => setShowPartyPopper(false), 3500);
+      prevAttendanceStatus.current = current;
+      return () => clearTimeout(hideTimer);
+    }
+    prevAttendanceStatus.current = current;
+  }, [offlineTimerState.attendanceStatus]);
+
+  // Teacher-specific timetable states
+  const [showTimetable, setShowTimetable] = useState(false);
+  const [timetable, setTimetable] = useState(null);
+  const [editingCell, setEditingCell] = useState(null);
+  const [editSubject, setEditSubject] = useState('');
+  const [editRoom, setEditRoom] = useState('');
+
+  // Student detail modal states
+  const [selectedStudent, setSelectedStudent] = useState(null);
+  const [studentDetails, setStudentDetails] = useState(null);
+  const [attendanceRecords, setAttendanceRecords] = useState([]);
+  const [attendanceStats, setAttendanceStats] = useState(null);
+  const [loadingDetails, setLoadingDetails] = useState(false);
+
+  // Teacher UI navigation states (MUST be at top level - no conditional hooks)
+  const [showViewRecords, setShowViewRecords] = useState(false);
+  const [showNotification, setShowNotification] = useState(false);
+  const [showUpdates, setShowUpdates] = useState(false);
+  const [showHelpAndSupport, setShowHelpAndSupport] = useState(false);
+  const [showFeedback, setShowFeedback] = useState(false);
+  const [randomRingDialogOpen, setRandomRingDialogOpen] = useState(false);
+  const [activeRandomRing, setActiveRandomRing] = useState(null); // Track active random ring for accept/reject
+  const [randomRingData, setRandomRingData] = useState(null); // Active ring notification for student
+  const [selectedBranchForTimetable, setSelectedBranchForTimetable] = useState(null);
+  const [showSemesterSelector, setShowSemesterSelector] = useState(false);
+  const [manualSelection, setManualSelection] = useState({ semester: 'auto', branch: null });
+  const [selectedSemesterForTimetable] = useState(null);
+
+  // Manual Class Details Setup States
+  const [assignedRoom, setAssignedRoom] = useState(null);
+  const [assignedPeriod, setAssignedPeriod] = useState(null);
+  const [isPeriodManuallySet, setIsPeriodManuallySet] = useState(false);
+  const [showClassSetupModal, setShowClassSetupModal] = useState(false);
+  const [tempPeriod, setTempPeriod] = useState(1);
+  const [tempRoom, setTempRoom] = useState('Room 201');
+  const [tempManualSet, setTempManualSet] = useState(false);
+  const [showPeriodSelector, setShowPeriodSelector] = useState(false);
+  const [isRoomDropdownExpanded, setIsRoomDropdownExpanded] = useState(false);
+  const [showApplyLeaveModal, setShowApplyLeaveModal] = useState(false);
+  const [leaveStartDate, setLeaveStartDate] = useState((() => {
+    const d = new Date();
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return `${y}-${m}-${day}`;
+  })());
+  const [leaveEndDate, setLeaveEndDate] = useState((() => {
+    const d = new Date();
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return `${y}-${m}-${day}`;
+  })());
+  const [leaveReason, setLeaveReason] = useState('');
+  const [submittingLeave, setSubmittingLeave] = useState(false);
+
+  // Real Classrooms and Pagination States
+  const [realClassrooms, setRealClassrooms] = useState([]);
+  const [classroomsPage, setClassroomsPage] = useState(0);
+  const CLASSROOMS_PER_PAGE = 5;
+
+  const handleApplyLeaveSubmit = async () => {
+    if (!leaveStartDate || !leaveEndDate) {
+      showToast('❌ Please fill in start and end dates', 'error');
+      return;
+    }
+    setSubmittingLeave(true);
+    try {
+      console.log('📡 Submitting leave request for:', userData?.name);
+      const response = await fetch(POST_LEAVES_APPLY, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          teacherId: userData?.employeeId || userData?.email || 'N/A',
+          teacherName: userData?.name || 'Teacher',
+          startDate: leaveStartDate,
+          endDate: leaveEndDate,
+          reason: leaveReason
+        })
+      });
+      const data = await response.json();
+      if (data.success) {
+        showToast('✅ Leave request submitted successfully', 'success');
+        setShowApplyLeaveModal(false);
+        setLeaveReason('');
+      } else {
+        showToast(`❌ Error: ${data.error || 'Failed to submit request'}`, 'error');
+      }
+    } catch (err) {
+      showToast('❌ Connection error. Please try again.', 'error');
+      console.error(err);
+    } finally {
+      setSubmittingLeave(false);
+    }
+  };
+
+  const fetchRealClassrooms = async () => {
+    try {
+      console.log('📡 Fetching real classrooms from:', GET_CLASSROOMS);
+      const response = await fetch(GET_CLASSROOMS);
+      const data = await response.json();
+      if (data.success && data.classrooms) {
+        const rooms = data.classrooms
+          .filter(c => c.isActive !== false)
+          .map(c => c.roomNumber);
+        const uniqueRooms = Array.from(new Set(rooms)).sort();
+        setRealClassrooms(uniqueRooms);
+        console.log(`🏫 Loaded ${uniqueRooms.length} real classrooms from server`);
+      }
+    } catch (err) {
+      console.warn('⚠️ Error fetching classrooms from server:', err.message);
+    }
+  };
+
+  useEffect(() => {
+    if (selectedRole === 'teacher' && showClassSetupModal) {
+      fetchRealClassrooms();
+      setClassroomsPage(0); // Reset page selection
+    }
+  }, [selectedRole, showClassSetupModal]);
+
+  const getPaginatedClassrooms = () => {
+    const list = realClassrooms.length > 0 ? realClassrooms : [
+      'Room 201', 'Room 304 (Lab)', 'Hall A', 'Room 101', 'Room 102', 'Room 202', 'Room 203', 'Room 301', 'Room 302'
+    ];
+    const startIndex = classroomsPage * CLASSROOMS_PER_PAGE;
+    return list.slice(startIndex, startIndex + CLASSROOMS_PER_PAGE);
+  };
+
+  const getTotalClassroomPages = () => {
+    const list = realClassrooms.length > 0 ? realClassrooms : [
+      'Room 201', 'Room 304 (Lab)', 'Hall A', 'Room 101', 'Room 102', 'Room 202', 'Room 203', 'Room 301', 'Room 302'
+    ];
+    return Math.ceil(list.length / CLASSROOMS_PER_PAGE);
+  };
+
+  const getAutoTrackedPeriod = () => {
+    const now = new Date();
+    const offset = 5.5 * 60 * 60 * 1000;
+    const istTime = new Date(now.getTime() + offset);
+    const currentTime = istTime.getUTCHours() * 60 + istTime.getUTCMinutes();
+
+    if (!timetable || !timetable.periods || timetable.periods.length === 0) {
+      return 1;
+    }
+
+    let nearestPeriod = 1;
+    let minDifference = Infinity;
+
+    for (let i = 0; i < timetable.periods.length; i++) {
+      const periodInfo = timetable.periods[i];
+      if (periodInfo && periodInfo.startTime && periodInfo.endTime) {
+        const [startHour, startMin] = periodInfo.startTime.split(':').map(Number);
+        const [endHour, endMin] = periodInfo.endTime.split(':').map(Number);
+        const startMinutes = (startHour || 0) * 60 + (startMin || 0);
+        const endMinutes = (endHour || 0) * 60 + (endMin || 0);
+
+        if (currentTime >= startMinutes && currentTime < endMinutes) {
+          return periodInfo.number || (i + 1);
+        }
+
+        const diffToStart = Math.abs(currentTime - startMinutes);
+        const diffToEnd = Math.abs(currentTime - endMinutes);
+        const smallestDiff = Math.min(diffToStart, diffToEnd);
+
+        if (smallestDiff < minDifference) {
+          minDifference = smallestDiff;
+          nearestPeriod = periodInfo.number || (i + 1);
+        }
+      }
+    }
+    return nearestPeriod;
+  };
+
+  const getTimetableRoomForPeriod = (periodNum) => {
+    if (!timetable || !timetable.timetable) return 'Room 201';
+    const dayIndex = new Date(Date.now() + 5.5 * 60 * 60 * 1000).getUTCDay();
+    const dayNames = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
+    const todayName = dayNames[dayIndex];
+    const daySchedule = timetable.timetable[todayName];
+    if (daySchedule) {
+      const periodObj = daySchedule.find(p => p.period === periodNum);
+      if (periodObj && periodObj.room) {
+        return periodObj.room;
+      }
+    }
+    return 'Room 201';
+  };
+
+  const getDisplaySubject = () => {
+    if (!currentClassInfo) return '';
+    if (currentClassInfo.isManual) {
+      if (assignedRoom && assignedPeriod) {
+        return `Manual Selection (${assignedRoom}, Period ${assignedPeriod})`;
+      } else {
+        return 'Manual Selection (Assign Classroom)';
+      }
+    }
+    return currentClassInfo.subject;
+  };
+
+  const getDisplaySubtext = () => {
+    if (!currentClassInfo) return '';
+    let text = `${currentClassInfo.branch} • Sem ${currentClassInfo.semester}`;
+    if (currentClassInfo.isManual) {
+      if (assignedRoom && assignedPeriod) {
+        text += ' (Saved)';
+      }
+    } else if (currentClassInfo.startTime && currentClassInfo.endTime) {
+      text += ` • ${currentClassInfo.startTime}-${currentClassInfo.endTime}`;
+    }
+    return text;
+  };
+
+  const handleSaveClassSetup = async () => {
+    if (!currentClassInfo) return;
+    try {
+      const getISTDayName = () => {
+        const now = new Date();
+        const offset = 5.5 * 60 * 60 * 1000;
+        const istTime = new Date(now.getTime() + offset);
+        const dayNames = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
+        return dayNames[istTime.getUTCDay()];
+      };
+
+      const dayName = getISTDayName();
+      console.log(`📡 Sending room update: Sem ${currentClassInfo.semester}, Branch ${currentClassInfo.branch}, Day ${dayName}, Period ${tempPeriod}, Room ${tempRoom}`);
+
+      const response = await fetch(POST_TIMETABLE_UPDATE_ROOM, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          semester: currentClassInfo.semester,
+          branch: currentClassInfo.branch,
+          day: dayName,
+          period: tempPeriod,
+          room: tempRoom
+        })
+      });
+
+      const data = await response.json();
+      if (data.success) {
+        console.log('✅ Timetable room updated successfully on server:', data);
+        
+        // Save to local state
+        setAssignedRoom(tempRoom);
+        setAssignedPeriod(tempPeriod);
+        setIsPeriodManuallySet(tempManualSet);
+
+        // Persist to AsyncStorage
+        await AsyncStorage.setItem('@assigned_room', tempRoom);
+        await AsyncStorage.setItem('@assigned_period', tempPeriod.toString());
+        await AsyncStorage.setItem('@is_period_manually_set', tempManualSet ? 'true' : 'false');
+
+        // Close modal
+        setShowClassSetupModal(false);
+
+        // Show toast notification
+        showToast(`Timetable Successfully Updated for ${tempRoom}, Period ${tempPeriod}`, 'success');
+
+        // Fetch student list again to sync state
+        fetchStudents({ semester: currentClassInfo.semester, branch: currentClassInfo.branch });
+      } else {
+        console.warn('❌ Failed to update room on server:', data.error);
+        showToast(`Error: ${data.error || 'Failed to update classroom'}`, 'error');
+      }
+    } catch (err) {
+      console.error('❌ Network error updating room:', err);
+      showToast('Network error updating room details', 'error');
+    }
+  };
+
+  // Login states
+  const [showLogin, setShowLogin] = useState(true); // start with login until session is verified
+  const [loginId, setLoginId] = useState('');
+  const [loginPassword, setLoginPassword] = useState('');
+  const [loginError, setLoginError] = useState('');
+  const [isLoggingIn, setIsLoggingIn] = useState(false);
+  const [userData, setUserData] = useState(null);
+  const [loggedInUserId, setLoggedInUserId] = useState(''); // Persistent user ID after login
+
+  // Log when userData changes (for debugging permissions)
+  useEffect(() => {
+    if (userData && selectedRole === 'teacher') {
+      console.log('👤 App.js - userData updated:', userData.name);
+      console.log('✏️ App.js - canEditTimetable:', userData.canEditTimetable);
+    }
+  }, [userData, selectedRole]);
+
+  // Theme state
+  const systemColorScheme = useColorScheme();
+  const [themeMode, setThemeMode] = useState('warm'); // Default to warm (light) theme
+  const [showThemePicker, setShowThemePicker] = useState(false);
+  const isDarkTheme = themeMode === 'night';
+  const theme = THEMES[themeMode] || THEMES.warm;
+
+  // Loading state for better UX
+  const [isInitializing, setIsInitializing] = useState(true);
+  const [splashDone, setSplashDone] = useState(false);
+
+  // Profile modal state
+  const [showProfile, setShowProfile] = useState(false);
+
+  // Bottom navigation state
+  const [activeTab, setActiveTab] = useState('home');
+  const [notificationBadge, setNotificationBadge] = useState(0);
+
+  // BSSID Test state
+  const [showBSSIDTest, setShowBSSIDTest] = useState(false);
+
+  // WiFi status tracking (internal use only - not displayed to students)
+  const [wifiDebugInfo, setWifiDebugInfo] = useState({
+    status: 'Not checked',
+    currentBSSID: 'N/A',
+    expectedBSSID: 'N/A',
+    room: 'N/A',
+    lastChecked: null
+  });
+
+  // Auto-check WiFi status (background only - no debug display)
+  useEffect(() => {
+    if (selectedRole === 'student' && !showLogin) {
+      const wifiCheckInterval = setInterval(async () => {
+        if (currentClassInfoRef.current) {
+          // Background check: silence alerts to avoid spamming the user
+          await isConnectedToClassroomWiFi(true); 
+        }
+      }, 60000); // Check every 60s — background only, no display
+
+      return () => clearInterval(wifiCheckInterval);
+    }
+  }, [selectedRole, showLogin]); // removed currentClassInfo from deps — avoids re-registering interval on every class change
+
+  // Lanyard state
+  const [showLanyard, setShowLanyard] = useState(false);
+
+  // Pull-to-refresh states
+  const [refreshingTeacher, setRefreshingTeacher] = useState(false);
+  const [refreshingStudent, setRefreshingStudent] = useState(false);
+  const [isOffline, setIsOffline] = useState(false);
+
+  // Current day state for real-time timetable updates (using server time)
+  const [currentDay, setCurrentDay] = useState(() => {
+    try {
+      const serverTime = getServerTime();
+      return serverTime.getCurrentDay();
+    } catch {
+      // Fallback to boot-anchored time if server time not initialized yet
+      const dayIndex = new Date(_appGetBootMs()).getDay();
+      const days = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+      return days[dayIndex];
+    }
+  });
+
+  // Class progress tracking (display only - server handles timing)
+  const [currentClassInfo, setCurrentClassInfo] = useState(null);
+
+  // Offline timetable period data (from BSSIDStorage - has full teacher/room/time info)
+  const [offlinePeriod, setOfflinePeriod] = useState(null);
+
+  // Detailed attendance tracking (using server time)
+  const [todayAttendance, setTodayAttendance] = useState({
+    date: (() => {
+      try {
+        const serverTime = getServerTime();
+        return serverTime.nowDate().toDateString();
+      } catch {
+        return new Date(_appGetBootMs()).toDateString();
+      }
+    })(),
+    lectures: [], // { subject, attended, total, present }
+    totalAttended: 0,
+    totalClassTime: 0,
+    dayPresent: false
+  });
+  const [attendanceHistory, setAttendanceHistory] = useState([]);
+
+  const intervalRef = useRef(null);
+  const socketRef = useRef(null);
+  const currentClassRoomRef = useRef(null); // tracks the room teacher is currently in
+  const studentIdRef = useRef(null);   // always current studentId for socket handlers
+  const loginIdRef = useRef(null);     // always current teacher loginId for socket handlers
+  const selectedRoleRef = useRef(null); // always current role for socket handlers
+  const semesterRef = useRef(null);    // always current semester for socket handlers
+  const branchRef = useRef(null);      // always current branch for socket handlers
+  const lastSocketTimerEmitRef = useRef(0); // throttle for socket timer fallback
+  const manualSelectionRef = useRef(manualSelection);
+  const currentClassInfoRef = useRef(null); // always current class for background WiFi checks
+  const offlinePeriodRef = useRef(null); // Ref to track current period for socket listeners
+  const appState = useRef(AppState.currentState);
+  const backgroundTimeRef = useRef(null);
+  const shownMissedRingIds = useRef(new Set()); // prevent duplicate "missed ring" alerts
+  const periodicSyncRef = useRef(null); // periodic server sync interval
+
+  // Teacher-side WebRTC P2P state
+  const teacherRtcConnections = useRef({}); // enrollmentNo → RTCPeerConnection
+  const teacherDataChannels = useRef({});   // enrollmentNo → RTCDataChannel
+  const [teacherP2PStatus, setTeacherP2PStatus] = useState({}); // enrollmentNo → 'connecting'|'open'|'closed'
+  const [teacherIsOnWifi, setTeacherIsOnWifi] = useState(false); // true when teacher has WiFi
+  const lanInitializedRef = useRef(false);
+  const lanInitForRef = useRef(null);
+  const lanUnsubscribeRef = useRef(null);
+
+  // Keep refs in sync with state so socket handlers always read current values
+  useEffect(() => { studentIdRef.current = studentId; }, [studentId]);
+  useEffect(() => { loginIdRef.current = loginId; }, [loginId]);
+  useEffect(() => { selectedRoleRef.current = selectedRole; }, [selectedRole]);
+  useEffect(() => { semesterRef.current = semester; }, [semester]);
+  useEffect(() => { branchRef.current = branch; }, [branch]);
+  useEffect(() => { manualSelectionRef.current = manualSelection; }, [manualSelection]);
+  useEffect(() => { currentClassInfoRef.current = currentClassInfo; }, [currentClassInfo]);
+  useEffect(() => { offlinePeriodRef.current = offlinePeriod; }, [offlinePeriod]);
+
+  // ── P2P auto pre-warm when teacher gets on WiFi ───────────────────────────
+  // Fires when teacherIsOnWifi flips true (teacher connected to WiFi).
+  // Pre-warms while internet is still up so connections survive an internet drop.
+  useEffect(() => {
+    if (selectedRole !== 'teacher' || !teacherIsOnWifi) return;
+    const timer = setTimeout(() => {
+      if (typeof teacherPreWarmP2P === 'function') {
+        console.log('[P2P] Teacher on WiFi detected — pre-warming connections...');
+        teacherPreWarmP2P();
+      }
+    }, 1000); // 1s delay so students list is ready
+    return () => clearTimeout(timer);
+  }, [teacherIsOnWifi, selectedRole]);
+
+  // ── Periodic P2P health check (teacher side) ─────────────────────────────
+  // Every 30s: re-establish any DataChannel that dropped while WiFi is up.
+  useEffect(() => {
+    if (selectedRole !== 'teacher') return;
+    const interval = setInterval(() => {
+      if (!teacherIsOnWifi) return;
+      const activeStudents = students.filter(s => s.status === 'active' || s.isRunning);
+      const staleStudents = activeStudents.filter(s => {
+        const dc = teacherDataChannels.current[s.enrollmentNo];
+        return !dc || dc.readyState !== 'open';
+      });
+      if (staleStudents.length > 0) {
+        console.log(`[P2P] Health check: ${staleStudents.length} stale channel(s) — re-warming...`);
+        if (typeof teacherPreWarmP2P === 'function') teacherPreWarmP2P();
+      }
+    }, 30000);
+    return () => clearInterval(interval);
+  }, [selectedRole, teacherIsOnWifi, students]);
+
+  // ── P2P fallback when internet drops but WiFi stays (teacher side) ────────
+  // When teacher loses internet but stays on authorized WiFi, check if P2P
+  // channels are open. If not, attempt to pre-warm (requires socket still up).
+  const prevHasInternetRef = useRef(true);
+  useEffect(() => {
+    if (selectedRole !== 'teacher') return;
+    const hasInternet = offlineTimerState.hasInternetConnection;
+    const hadInternet = prevHasInternetRef.current;
+    prevHasInternetRef.current = hasInternet;
+
+    // Internet just dropped and WiFi is still connected
+    if (hadInternet && !hasInternet && teacherIsOnWifi) {
+      console.log('[P2P] Internet dropped — checking if P2P channels are open...');
+      const activeStudents = students.filter(s => s.status === 'active' || s.isRunning);
+      const openChannels = activeStudents.filter(s => {
+        const dc = teacherDataChannels.current[s.enrollmentNo];
+        return dc && dc.readyState === 'open';
+      });
+      console.log(`[P2P] ${openChannels.length}/${activeStudents.length} channels open for offline fallback`);
+      // If any channels are missing, try to establish while socket may still work
+      if (openChannels.length < activeStudents.length && typeof teacherPreWarmP2P === 'function') {
+        console.log('[P2P] Attempting last-chance P2P pre-warm before full offline...');
+        teacherPreWarmP2P();
+      }
+    }
+  }, [offlineTimerState.hasInternetConnection]);
+
+  // ── Initialize LAN UDP when role is known ────────────────────────────────
+  useEffect(() => {
+    if (showLogin) return;
+    if (selectedRole === 'student' && studentId) {
+      initLanP2P('student', studentId);
+    } else if (selectedRole === 'teacher' && loginId) {
+      initLanP2P('teacher', loginId);
+    }
+  }, [selectedRole, studentId, loginId, showLogin]);
+
+  // Animations
+  const glowAnim = useRef(new Animated.Value(0)).current;
+  const fadeAnim = useRef(new Animated.Value(0)).current;
+  const pulseAnim = useRef(new Animated.Value(1)).current;
+  const scaleAnim = useRef(new Animated.Value(0)).current;
+  const profileScaleAnim = useRef(new Animated.Value(0)).current;
+
+  useEffect(() => {
+    if (splashDone) {
+      Animated.timing(fadeAnim, {
+        toValue: 1,
+        duration: 800,
+        useNativeDriver: false,
+      }).start();
+    }
+  }, [splashDone]);
+
+  useEffect(() => {
+    // Only animate glow in dark theme and after splash is done
+    if (isDarkTheme && splashDone) {
+      const anim = Animated.loop(
+        Animated.sequence([
+          Animated.timing(glowAnim, {
+            toValue: 1,
+            duration: 2000,
+            useNativeDriver: false,
+          }),
+          Animated.timing(glowAnim, {
+            toValue: 0,
+            duration: 2000,
+            useNativeDriver: false,
+          }),
+        ])
+      );
+      anim.start();
+      return () => anim.stop();
+    } else {
+      glowAnim.stopAnimation();
+    }
+  }, [isDarkTheme, splashDone]);
+
+  useEffect(() => {
+    // Animate modal when it opens
+    if (selectedStudent) {
+      scaleAnim.setValue(0);
+      Animated.spring(scaleAnim, {
+        toValue: 1,
+        tension: 50,
+        friction: 7,
+        useNativeDriver: true,
+      }).start();
+    }
+  }, [selectedStudent]);
+
+  useEffect(() => {
+    // Animate profile modal when it opens
+    if (showProfile) {
+      profileScaleAnim.setValue(0);
+      Animated.spring(profileScaleAnim, {
+        toValue: 1,
+        tension: 50,
+        friction: 7,
+        useNativeDriver: true,
+      }).start();
+    }
+  }, [showProfile]);
+
+  // Update current day at midnight and reset verification (using server time in IST)
+  useEffect(() => {
+    const getISTDateStr = (timestamp) => {
+        const ist = new Date(timestamp + 5.5 * 60 * 60 * 1000);
+        return ist.toISOString().split('T')[0];
+    };
+    
+    let lastDate = (() => {
+      try {
+        const serverTime = getServerTime();
+        return getISTDateStr(serverTime.now());
+      } catch {
+        return getISTDateStr(new Date(_appGetBootMs() || Date.now()).getTime());
+      }
+    })();
+
+    const updateCurrentDay = () => {
+      try {
+        const serverTime = getServerTime();
+        const currentDate = getISTDateStr(serverTime.now());
+
+        // Update current day using server time
+        setCurrentDay(serverTime.getCurrentDay());
+
+        // Check if date changed (new day)
+        if (currentDate !== lastDate) {
+          console.log('🌅 New day detected (server time)! Resetting attendance status.');
+          // Face verification removed - no longer needed
+          // Timer removed - period-based attendance
+          lastDate = currentDate;
+
+          // Clear saved verification state and offline timer
+          AsyncStorage.removeItem(DAILY_VERIFICATION_KEY).catch(err =>
+            console.log('Error clearing verification:', err)
+          );
+          if (typeof OfflineTimerService !== 'undefined') {
+              OfflineTimerService.clearState?.();
+              AsyncStorage.removeItem('@offline_timer_state');
+              SecureStorage.clearTimerStateRedundancy?.();
+          }
+        }
+      } catch (error) {
+        console.warn('⚠️ Server time not available, using boot-anchored time');
+        const timestamp = _appGetBootMs() || Date.now();
+        const currentDate = getISTDateStr(timestamp);
+        const istDate = new Date(timestamp + 5.5 * 60 * 60 * 1000);
+        const dayIndex = istDate.getUTCDay();
+        const days = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+        setCurrentDay(days[dayIndex]);
+
+        if (currentDate !== lastDate) {
+          console.log('🌅 New day detected (device time)! Resetting attendance status.');
+          // Face verification removed - no longer needed
+          // Timer removed - period-based attendance
+          lastDate = currentDate;
+
+          // Clear saved verification state and offline timer
+          AsyncStorage.removeItem(DAILY_VERIFICATION_KEY).catch(err =>
+            console.log('Error clearing verification:', err)
+          );
+          if (typeof OfflineTimerService !== 'undefined') {
+              OfflineTimerService.clearState?.();
+              AsyncStorage.removeItem('@offline_timer_state');
+              SecureStorage.clearTimerStateRedundancy?.();
+          }
+        }
+      }
+    };
+
+    // Check every minute if day has changed
+    const dayCheckInterval = setInterval(() => {
+      updateCurrentDay();
+    }, 60000); // Check every minute
+
+    return () => clearInterval(dayCheckInterval);
+  }, []);
+
+  // Fetch timetable when user is logged in and semester/branch are available
+  useEffect(() => {
+    if (selectedRole === 'student' && !showLogin) {
+      // For students, try to get semester/branch from stored data if not already set
+      if (!semester || !branch) {
+        const loadStudentData = async () => {
+          try {
+            // Get stored student data
+            const storedSemester = await AsyncStorage.getItem(SEMESTER_KEY);
+            const storedBranch = await AsyncStorage.getItem(BRANCH_KEY);
+
+            if (storedSemester && storedBranch) {
+              console.log('📚 Auto-loading student data:', storedSemester, storedBranch);
+              setSemester(storedSemester);
+              setBranch(storedBranch);
+            } else {
+              console.log('⚠️ No semester/branch found for student - waiting for profile data');
+            }
+          } catch (error) {
+            console.log('Error loading student data:', error);
+          }
+        };
+        loadStudentData();
+      } else {
+        console.log('Fetching timetable for logged in student:', semester, branch);
+        fetchTimetable(semester, branch);
+      }
+    }
+  }, [selectedRole, semester, branch, showLogin]);
+
+  // Fetch timetable when semester/branch are set for students
+  useEffect(() => {
+    if (selectedRole === 'student' && semester && branch && !showLogin) {
+      console.log('📅 Semester/branch available, fetching timetable:', semester, branch);
+      fetchTimetable(semester, branch);
+    }
+  }, [semester, branch, selectedRole, showLogin]);
+
+  // Fetch timetable for teachers when semester/branch are available
+  useEffect(() => {
+    if (selectedRole === 'teacher' && semester && branch && !showLogin) {
+      console.log('👨‍🏫 Teacher - Semester/branch available, fetching timetable:', semester, branch);
+      fetchTimetable(semester, branch);
+    }
+  }, [semester, branch, selectedRole, showLogin]);
+
+  // Check if today is a leave day (no classes scheduled)
+  const isLeaveDay = () => {
+    try {
+      // Check if there are any classes today
+      if (!timetable?.schedule?.[currentDay]) return false;
+      const schedule = timetable.schedule[currentDay];
+      if (!schedule || !Array.isArray(schedule)) return false;
+      const hasClasses = schedule.some(slot => !slot.isBreak && slot.subject);
+      return !hasClasses;
+    } catch (error) {
+      console.log('Error checking leave day:', error);
+      return false;
+    }
+  };
+
+  // Save attendance to server when lectures are updated
+  useEffect(() => {
+    if (selectedRole === 'student' && todayAttendance.lectures.length > 0 && studentId && semester && branch) {
+      saveAttendanceToServer();
+    }
+  }, [todayAttendance.lectures.length]);
+
+  // Branch restrictions removed - teachers can see all branches
+
+  // Periodic refresh for teacher to see real-time student updates
+  useEffect(() => {
+    // Teacher auto-refresh: works with or without semester/branch (uses loginId-based API)
+    if (selectedRole === 'teacher' && activeTab === 'home') {
+      // Initial fetch
+      fetchStudents();
+
+      // Refresh every 60 seconds as backup (socket provides real-time updates)
+      const refreshInterval = setInterval(() => {
+        fetchStudents();
+      }, 60000); // 60 seconds — socket events provide instant updates
+
+      return () => clearInterval(refreshInterval);
+    }
+  }, [selectedRole, activeTab, manualSelection]); // Added manualSelection to deps to avoid stale closure during interval refresh
+
+  // Calculate current class progress every second
+  useEffect(() => {
+    if (!timetable?.schedule?.[currentDay] || selectedRole !== 'student') return;
+
+    const updateClassProgress = () => {
+      let now, currentHour, currentMinute, currentSeconds, currentTimeInSeconds;
+
+      try {
+        const serverTime = getServerTime();
+        now = serverTime.nowDate();
+        currentHour = now.getHours();
+        currentMinute = now.getMinutes();
+        currentSeconds = now.getSeconds();
+        currentTimeInSeconds = (currentHour * 3600) + (currentMinute * 60) + currentSeconds;
+      } catch {
+        now = new Date(_appGetBootMs());
+        currentHour = now.getHours();
+        currentMinute = now.getMinutes();
+        currentSeconds = now.getSeconds();
+        currentTimeInSeconds = (currentHour * 3600) + (currentMinute * 60) + currentSeconds;
+      }
+
+      const schedule = timetable.schedule[currentDay];
+      let foundClass = null;
+
+      // Find first and last lecture times (excluding breaks)
+      let firstLectureStart = null;
+      let lastLectureEnd = null;
+      let currentLecture = null;
+
+      for (const slot of schedule) {
+        if (slot.time && !slot.isBreak) {
+          const [start, end] = slot.time.split('-').map(t => t.trim());
+          const [startH, startM] = start.split(':').map(Number);
+          const [endH, endM] = end.split(':').map(Number);
+
+          const startSeconds = (startH * 3600) + (startM * 60);
+          const endSeconds = (endH * 3600) + (endM * 60);
+
+          // Track first and last lecture times
+          if (firstLectureStart === null || startSeconds < firstLectureStart) {
+            firstLectureStart = startSeconds;
+          }
+          if (lastLectureEnd === null || endSeconds > lastLectureEnd) {
+            lastLectureEnd = endSeconds;
+          }
+
+          // Check if we're currently in this lecture
+          if (currentTimeInSeconds >= startSeconds && currentTimeInSeconds < endSeconds) {
+            currentLecture = {
+              subject: slot.subject,
+              teacher: slot.teacher || slot.teacherName || 'Unknown',
+              room: slot.room,
+              startTime: start,
+              endTime: end,
+              period: slot.period || slot.periodNumber || null,
+            };
+          }
+        }
+      }
+
+      // Check if we're within the overall lecture period (first to last)
+      if (firstLectureStart !== null && lastLectureEnd !== null) {
+        if (currentTimeInSeconds >= firstLectureStart && currentTimeInSeconds <= lastLectureEnd) {
+          // We're within lecture hours (including breaks)
+          const elapsed = currentTimeInSeconds - firstLectureStart;
+          const total = lastLectureEnd - firstLectureStart;
+          const remaining = total - elapsed;
+
+          // Convert first/last times to HH:MM format
+          const firstStartH = Math.floor(firstLectureStart / 3600);
+          const firstStartM = Math.floor((firstLectureStart % 3600) / 60);
+          const lastEndH = Math.floor(lastLectureEnd / 3600);
+          const lastEndM = Math.floor((lastLectureEnd % 3600) / 60);
+
+          foundClass = {
+            subject: currentLecture ? currentLecture.subject : 'Break Time',
+            teacher: currentLecture ? currentLecture.teacher : '',
+            room: currentLecture ? currentLecture.room : '',
+            startTime: `${firstStartH.toString().padStart(2, '0')}:${firstStartM.toString().padStart(2, '0')}`,
+            endTime: `${lastEndH.toString().padStart(2, '0')}:${lastEndM.toString().padStart(2, '0')}`,
+            currentLecture: currentLecture ? `${currentLecture.subject} (${currentLecture.startTime}-${currentLecture.endTime})` : 'Break',
+            elapsedMinutes: Math.floor(elapsed / 60),
+            remainingMinutes: Math.floor(remaining / 60),
+            remainingSeconds: remaining,
+            totalMinutes: Math.floor(total / 60),
+            elapsedSeconds: elapsed,
+            totalSeconds: total,
+            isWithinLectureHours: true,
+            period: currentLecture ? currentLecture.period : null,
+          };
+        }
+      }
+
+      // Update class info only when it actually changes (avoid re-render every second)
+      // Don't clear to null immediately — only clear if offlinePeriod is also null
+      // (offlinePeriod acts as a secondary source; clearing both at once prevents flicker)
+      setCurrentClassInfo(prev => {
+        if (!foundClass && !prev) return prev;
+        if (!foundClass) {
+          // Only clear timetable-provided info if offlinePeriod is also gone
+          // (offlinePeriod synthesis effect will handle its own clearing)
+          if (prev && prev.isFromOfflineSchedule) return prev; // let offlinePeriod effect handle it
+          return null;
+        }
+        if (!prev) return foundClass;
+        // Only update if meaningful fields changed (not every second for elapsed/remaining)
+        if (
+          prev.subject !== foundClass.subject ||
+          prev.currentLecture !== foundClass.currentLecture ||
+          prev.startTime !== foundClass.startTime ||
+          prev.endTime !== foundClass.endTime ||
+          prev.elapsedMinutes !== foundClass.elapsedMinutes
+        ) {
+          return foundClass;
+        }
+        return prev;
+      });
+    };
+
+    updateClassProgress();
+    const progressInterval = setInterval(updateClassProgress, 15000); // Check every 15s for faster updates
+
+    return () => clearInterval(progressInterval);
+  }, [timetable, currentDay, selectedRole]);
+
+  // If timetable hasn't loaded or has no schedule but offline period is active,
+  // synthesize currentClassInfo from offlinePeriod so the timer box shows
+  useEffect(() => {
+    if (selectedRole !== 'student') return;
+
+    if (offlinePeriod) {
+      // Active period in offline schedule — synthesize currentClassInfo if timetable hasn't provided it
+      setCurrentClassInfo(prev => {
+        if (prev && !prev.isFromOfflineSchedule) return prev; // timetable already provided — don't override
+        return {
+          subject: offlinePeriod.subject,
+          teacher: offlinePeriod.teacher || offlinePeriod.teacherName || 'Unknown',
+          room: offlinePeriod.room || 'Unknown',
+          startTime: offlinePeriod.startTime,
+          endTime: offlinePeriod.endTime,
+          currentLecture: `${offlinePeriod.subject} (${offlinePeriod.startTime}-${offlinePeriod.endTime})`,
+          isFromOfflineSchedule: true,
+          isWithinLectureHours: true,
+          elapsedMinutes: 0,
+          remainingMinutes: 0,
+        };
+      });
+    } else {
+      // No active period — clear synthesized info (but keep timetable-provided info)
+      setCurrentClassInfo(prev => {
+        if (prev && !prev.isFromOfflineSchedule) return prev;
+        return null;
+      });
+    }
+  }, [offlinePeriod, selectedRole]);
+
+  // Refresh offline period data from BSSIDStorage every minute
+  useEffect(() => {
+    if (selectedRole !== 'student') return;
+    // Debounce null results — only clear offlinePeriod after 2 consecutive nulls
+    // This prevents a single missed poll from causing a flicker to "No Lectures"
+    let nullCount = 0;
+    const fetchOfflinePeriod = async () => {
+      const period = await BSSIDStorage.getCurrentPeriodBSSID();
+      if (period) {
+        nullCount = 0;
+        setOfflinePeriod(period);
+      } else {
+        nullCount++;
+        // Only clear after 2 consecutive nulls (30s grace window at 15s interval)
+        if (nullCount >= 2) {
+          setOfflinePeriod(null);
+        }
+        // else: keep the last known period for one more cycle to avoid flicker
+      }
+
+      // If timer is running, update currentLecture in offlineTimerState
+      // so the Offline Timer box always shows the correct current period subject
+      if (period) {
+        setOfflineTimerState(prev => {
+          // Only update if period identifier actually changed (P1 to P2, etc.)
+          const periodChanged = prev.currentLecture?.period !== period.period;
+
+          if (!periodChanged) {
+            console.log('✅ Same period, continuing timer (no reset)');
+            // Still update lecture info but don't reset timer
+            const updatedLecture = {
+              ...prev.currentLecture,
+              subject: period.subject || prev.currentLecture?.subject,
+              teacher: period.teacher || period.teacherName || prev.currentLecture?.teacher,
+              room: period.room || prev.currentLecture?.room,
+              startTime: period.startTime || prev.currentLecture?.startTime,
+              endTime: period.endTime || prev.currentLecture?.endTime,
+              period: period.period || prev.currentLecture?.period,
+            };
+            if (OfflineTimerService.isRunning) {
+              OfflineTimerService.currentLecture = updatedLecture;
+            }
+            return { ...prev, currentLecture: updatedLecture };
+          }
+
+          console.log('🔄 Period change detected:', {
+            from: prev.currentLecture?.period,
+            to: period.period,
+            fromSubject: prev.currentLecture?.subject,
+            toSubject: period.subject,
+            timerWasRunning: prev.isRunning
+          });
+
+          // Period changed - save attendance to server for admin panel
+          // Save even if timer not running, as long as there's attendance data
+          const prevLecture = prev.currentLecture || OfflineTimerService.previousLectureData || OfflineTimerService.lastVerifiedLecture;
+          if (prev.timerSeconds > 0 || (todayAttendance && todayAttendance.lectures && todayAttendance.lectures.length > 0)) {
+            saveAttendanceToServer(prev.timerSeconds, 'attending', prevLecture || prev.currentLecture);
+          }
+
+          const updatedLecture = {
+            ...prev.currentLecture,
+            subject: period.subject || prev.currentLecture?.subject,
+            teacher: period.teacher || period.teacherName || prev.currentLecture?.teacher,
+            room: period.room || prev.currentLecture?.room,
+            startTime: period.startTime || prev.currentLecture?.startTime,
+            endTime: period.endTime || prev.currentLecture?.endTime,
+            period: period.period || prev.currentLecture?.period,
+          };
+
+          // Auto-start timer for period transitions (P1->P2, P2->P3, etc.)
+          // First time of day requires manual start, regardless of which period
+          const hasStartedTimerToday = prev.timerSeconds > 0 || prev.isRunning || OfflineTimerService.verifiedToday;
+          // Robust transition check: Timer was running in the previous period if it is currently running or was flagged as stopped at lecture end
+          const wasRunning = prev.isRunning || OfflineTimerService.wasRunningBeforeLectureEnd;
+
+          // Enforce room change and break gap checks for auto-start:
+          let isSameRoom = false;
+          let hasNoGap = false;
+          if (prevLecture && period) {
+            isSameRoom = (prevLecture.room || '').trim().toLowerCase() === (period.room || '').trim().toLowerCase();
+            if (prevLecture.endTime && period.startTime) {
+              try {
+                const [prevHour, prevMinute] = prevLecture.endTime.split(':').map(Number);
+                const [nextHour, nextMinute] = period.startTime.split(':').map(Number);
+                const prevTotal = prevHour * 60 + prevMinute;
+                const nextTotal = nextHour * 60 + nextMinute;
+                hasNoGap = nextTotal <= prevTotal;
+              } catch (e) {
+                hasNoGap = false;
+              }
+            }
+          }
+          const canAutoStart = isSameRoom && hasNoGap;
+
+          if (hasStartedTimerToday && wasRunning && canAutoStart) {
+            console.log('⏱️ Period transition detected (same room & continuous) - auto-starting timer from 00:00:00');
+            // Use an async IIFE so we can await properly without race conditions
+            (async () => {
+              try {
+                // 1. Stop the current period timer and sync its data (if running)
+                if (prev.isRunning) {
+                  await OfflineTimerService.stopTimer('period_change');
+                  console.log('   Timer stopped for period transition');
+                }
+
+                // 2. Hard-reset timer to 0 for the new period
+                OfflineTimerService.timerSeconds = 0;
+                OfflineTimerService._countingBaseSeconds = 0;
+                OfflineTimerService._countingStartedAt = null;
+                OfflineTimerService.attendanceStatus = 'absent';
+                OfflineTimerService.thresholdSeconds = null;
+                OfflineTimerService.isManuallyMarked = false; // Reset manual mark on transition
+                OfflineTimerService.wasRunningBeforeLectureEnd = false;  // Clear the flag
+                console.log('   Timer state reset to 0 for new period');
+
+                // 3. Small gap so the stop sync completes before we start again
+                await new Promise(resolve => setTimeout(resolve, 500));
+
+                // 4. Start fresh for the new period
+                const lectureInfo = {
+                  subject: period.subject || prev.currentLecture?.subject,
+                  teacher: period.teacher || period.teacherName || prev.currentLecture?.teacher,
+                  room: period.room || prev.currentLecture?.room,
+                  startTime: period.startTime || prev.currentLecture?.startTime,
+                  endTime: period.endTime || prev.currentLecture?.endTime,
+                  period: period.period || prev.currentLecture?.period,
+                };
+                if (lectureInfo.subject && lectureInfo.period) {
+                  await OfflineTimerService.startTimer(lectureInfo);
+                  console.log('✅ Timer auto-started for new period from 00:00:00');
+                } else {
+                  console.log('⚠️ Cannot auto-start — missing subject or period');
+                }
+              } catch (err) {
+                console.error('❌ Period transition error:', err);
+              }
+            })();
+          } else if (!hasStartedTimerToday) {
+            console.log('🌅 First time of day - requires manual START TIMER button');
+            // Reset stale timer from previous session
+            OfflineTimerService.timerSeconds = 0;
+            OfflineTimerService.attendanceStatus = 'absent';
+            OfflineTimerService.thresholdSeconds = null;
+            OfflineTimerService.isManuallyMarked = false; // Reset manual mark
+          } else {
+            console.log('⏸️ Different classrooms or time gap detected (or timer not running) - requires manual start + face verification');
+            // Stop the running timer since we transitioned to a gap or different room
+            if (prev.isRunning) {
+              (async () => {
+                try {
+                  await OfflineTimerService.stopTimer('period_change');
+                  console.log('   Timer stopped because auto-start is not allowed for this transition');
+                } catch (err) {
+                  console.error('❌ Error stopping timer during transition:', err);
+                }
+              })();
+            }
+            // Reset stale timer from previous period so new period starts clean
+            OfflineTimerService.timerSeconds = 0;
+            OfflineTimerService.attendanceStatus = 'absent';
+            OfflineTimerService.thresholdSeconds = null;
+            OfflineTimerService.isManuallyMarked = false; // Reset manual mark
+          }
+
+          // Also update OfflineTimerService's internal currentLecture
+          if (OfflineTimerService.isRunning) {
+            OfflineTimerService.currentLecture = updatedLecture;
+          }
+          // Reset timerSeconds in React state too so UI shows 00:00:00 for new period
+          return {
+            ...prev,
+            currentLecture: updatedLecture,
+            timerSeconds: prev.isRunning ? prev.timerSeconds : 0,
+            attendanceStatus: prev.isRunning ? prev.attendanceStatus : 'absent',
+            thresholdSeconds: prev.isRunning ? prev.thresholdSeconds : null,
+          };
+        });
+      } else {
+        // No active period - clear currentLecture completely
+        setOfflineTimerState(prev => {
+          if (prev.currentLecture) {
+            console.log('🔚 No active period - clearing stale lecture info');
+            return {
+              ...prev,
+              currentLecture: null,
+              timerSeconds: 0,
+              attendanceStatus: 'absent',
+              thresholdSeconds: null,
+            };
+          }
+          return prev;
+        });
+      }
+    };
+    fetchOfflinePeriod();
+    const interval = setInterval(fetchOfflinePeriod, 15000); // 15 seconds for faster period detection
+    return () => clearInterval(interval);
+  }, [selectedRole, studentId]);
+
+  useEffect(() => {
+    // Request all required permissions on first launch
+    requestStartupPermissions().then(async ({ allGranted }) => {
+      if (!allGranted) {
+        console.warn('⚠️ Some permissions were not granted at startup');
+      } else {
+        console.log('✅ All startup permissions granted');
+      }
+
+      // Android 11+ (API 30) background location mandatory choice UI
+      if (Platform.OS === 'android' && Platform.Version >= 29) {
+        try {
+          const bgGranted = await PermissionsAndroid.check(PermissionsAndroid.PERMISSIONS.ACCESS_BACKGROUND_LOCATION);
+          if (!bgGranted) {
+            Alert.alert(
+              "📍 Background Timer",
+              "To keep the attendance timer running while your phone is locked or in your pocket, you MUST select:\n\n\"Allow all the time\"\n\n⚠️ If you select \"Allow only while using the app\", the timer will PAUSE the moment you exit the app!",
+              [
+                { 
+                  text: "I Understand -> Let's Set It Up", 
+                  onPress: () => {
+                    try {
+                      PermissionsAndroid.request(PermissionsAndroid.PERMISSIONS.ACCESS_BACKGROUND_LOCATION);
+                    } catch(e) {}
+                  }
+                }
+              ],
+              { cancelable: false }
+            );
+          }
+        } catch (e) {
+          console.log('Failed to check background location', e);
+        }
+      }
+    });
+
+    // Initialize server time synchronization (CRITICAL for security)
+    const serverTime = initializeServerTime(SOCKET_URL);
+    serverTime.initialize().then(async (success) => {
+      if (serverTime.isDeviceTimeManipulated()) {
+        console.error('🚨 DEVICE TIME MANIPULATION DETECTED');
+        console.error('   Please set your device time to automatic');
+        Alert.alert(
+          '⚠️ Time Error',
+          'Your device time is incorrect. Please set your device time to automatic (use network-provided time) and restart the app.\n\nThe app cannot function with incorrect device time for security reasons.',
+          [{ text: 'OK' }]
+        );
+      } else if (success) {
+        console.log('✅ Server time synchronized');
+        console.log('   Server time:', serverTime.nowISO());
+        console.log('   Device time:', new Date().toISOString());
+        console.log('   Offset:', serverTime.serverTimeOffset, 'ms');
+      } else {
+        console.warn('⚠️ Server time sync failed');
+      }
+    });
+
+    // Face cache removed - no longer needed
+
+    console.log('📋 About to load config...');
+    loadConfig();
+    console.log('📋 Config loaded!');
+
+    // Handle app state changes (background/foreground)
+    const subscription = AppState.addEventListener('change', async nextAppState => {
+      if (appState.current.match(/inactive|background/) && nextAppState === 'active') {
+        // App came to foreground - period-based attendance (no timer)
+        console.log('📱 App came to foreground');
+        backgroundTimeRef.current = null;
+
+        // Refresh data for students when app comes to foreground
+        if (selectedRoleRef.current === 'student') {
+          console.log('🔄 Refreshing data after app came to foreground...');
+
+          // Rejoin class room in case socket reconnected while in background
+          const currentSem = semesterRef.current;
+          const currentBranch = branchRef.current;
+          if (currentSem && currentBranch) {
+            joinClassRoom(currentSem?.toString(), currentBranch);
+          }
+
+          // Refresh timetable
+          if (currentSem && currentBranch) {
+            console.log('📅 Fetching latest timetable...');
+            await fetchTimetable(currentSem, currentBranch);
+          }
+
+          // Refresh BSSID schedule - get enrollment number from storage
+          try {
+            const storedUserData = await AsyncStorage.getItem('@user_data');
+            if (storedUserData) {
+              const parsedUserData = JSON.parse(storedUserData);
+              if (parsedUserData.enrollmentNo) {
+                console.log('📶 Fetching latest BSSID schedule (forced refresh)...');
+                await fetchDailyBSSIDSchedule(parsedUserData.enrollmentNo, true); // Force refresh
+              }
+            }
+          } catch (error) {
+            console.error('❌ Error refreshing BSSID schedule:', error);
+          }
+
+          console.log('✅ Data refresh complete');
+        }
+      } else if (nextAppState.match(/inactive|background/)) {
+        // App went to background - period-based attendance (no timer)
+        console.log('📱 App went to background');
+      }
+      appState.current = nextAppState;
+    });
+
+    return () => {
+      if (socketRef.current) {
+        // Clear ping interval
+        if (socketRef.current.pingInterval) {
+          clearInterval(socketRef.current.pingInterval);
+        }
+        socketRef.current.disconnect();
+      }
+      subscription.remove();
+    };
+  }, []); // Only run once on mount
+
+  // Dedicated socket initialization/reconnection effect
+  useEffect(() => {
+    console.log('🔌 Socket effect triggered - Identity:', studentId || loggedInUserId || 'anonymous', '| Role:', selectedRole);
+    setupSocket();
+
+    return () => {
+      if (socketRef.current?.pingInterval) {
+        clearInterval(socketRef.current.pingInterval);
+        socketRef.current.pingInterval = null;
+      }
+      socketRef.current?.removeAllListeners?.();
+      socketRef.current?.disconnect?.();
+    };
+  }, [studentId, loggedInUserId, selectedRole]);
+
+  // Initialize OfflineTimerService when student logs in
+  useEffect(() => {
+    console.log('🔍 OfflineTimer init check:', { selectedRole, studentId: !!studentId, showLogin, offlineTimerInitialized });
+    if (selectedRole === 'student' && studentId && !showLogin && !offlineTimerInitialized) {
+      const initializeOfflineTimer = async () => {
+        try {
+          console.log('🔧 Initializing OfflineTimerService for student:', studentId);
+
+          const success = await OfflineTimerService.initialize(studentId, SOCKET_URL);
+
+          if (success) {
+            // Update student data for BSSID validation — run in background, don't block init
+            if (userData) {
+              OfflineTimerService.updateStudentData({
+                semester: userData.semester,
+                branch: userData.branch
+              }).catch(() => {});
+            }
+
+            // Setup event listeners
+            const unsubscribe = OfflineTimerService.addListener((event) => {
+              console.log('🔔 OfflineTimer event:', event.type);
+
+              // Helper to broadcast state changes over LAN (primary) + WebRTC (secondary)
+              const broadcastP2PUpdate = (seconds, isRunning, status, isStateChange = false) => {
+                // 1) LAN (primary, same Wi-Fi)
+                if (isStateChange) {
+                  LanP2PService.sendTimerStateChange(seconds, isRunning, status);
+                } else {
+                  LanP2PService.sendTimerUpdate(seconds, isRunning, status);
+                }
+                // 2) WebRTC (secondary, established peer link)
+                let webrtcSent = false;
+                if (
+                  socketRef.current?.rtcDC &&
+                  socketRef.current.rtcDC.readyState === 'open'
+                ) {
+                  try {
+                    socketRef.current.rtcDC.send(JSON.stringify({
+                      type: 'TIMER_UPDATE',
+                      studentId: studentIdRef.current,
+                      timerValue: seconds,
+                      isRunning,
+                      status,
+                    }));
+                    webrtcSent = true;
+                  } catch (err) {
+                    console.warn('[P2P] WebRTC timer update failed:', err.message);
+                  }
+                }
+                // 3) Server socket (fallback) — guarantees a cross-network teacher always
+                //    sees the timer even with no LAN/WebRTC path. State changes always go;
+                //    ticks are throttled to ~5s and only when WebRTC isn't carrying the value.
+                try {
+                  const now = _appGetBootMs();
+                  const shouldEmit = isStateChange ||
+                    (!webrtcSent && (now - lastSocketTimerEmitRef.current >= 5000));
+                  if (shouldEmit && socketRef.current?.connected && studentIdRef.current) {
+                    lastSocketTimerEmitRef.current = now;
+                    socketRef.current.emit('timer_update', {
+                      studentId: studentIdRef.current,
+                      timerValue: seconds,
+                      isRunning,
+                      status,
+                      semester: semesterRef.current?.toString(),
+                      branch: branchRef.current,
+                      via: 'socket',
+                    });
+                  }
+                } catch (err) {
+                  console.warn('[P2P] socket timer fallback failed:', err.message);
+                }
+              };
+
+              switch (event.type) {
+                case 'timer_tick':
+                  setOfflineTimerState(prev => ({
+                    ...prev,
+                    timerSeconds: event.timerSeconds
+                  }));
+                  broadcastP2PUpdate(event.timerSeconds, true, 'attending');
+                  break;
+
+                case 'timer_started':
+                  setOfflineTimerState(prev => ({
+                    ...prev,
+                    isRunning: true,
+                    isPaused: false,
+                    timerSeconds: event.timerSeconds,
+                    currentLecture: event.lecture
+                  }));
+                  broadcastP2PUpdate(event.timerSeconds, true, 'attending', true);
+                  break;
+
+                case 'timer_stopped':
+                  setOfflineTimerState(prev => ({
+                    ...prev,
+                    isRunning: false,
+                    isPaused: false,
+                    currentLecture: null,
+                    thresholdSeconds: null,   // reset so next period gets fresh threshold
+                    attendanceStatus: 'absent'
+                  }));
+                  // Alert if stopped because student left classroom while screen was off
+                  if (event.reason === 'wifi_left_classroom_background') {
+                    showToast('📶 Left classroom WiFi — timer stopped', 'warning');
+                    // Play alert sound to notify student
+                    const playAlert = async () => {
+                      try {
+                        const { sound } = await Audio.Sound.createAsync(
+                          { uri: 'https://assets.mixkit.co/active_storage/sfx/2869/2869-preview.mp3' }
+                        );
+                        await sound.playAsync();
+                      } catch (e) { console.log('Sound error', e); }
+                    };
+                    playAlert();
+                    Vibration.vibrate([0, 500, 200, 500]);
+                  }
+                  broadcastP2PUpdate(
+                    event.finalSeconds !== undefined ? event.finalSeconds : 0,
+                    false,
+                    OfflineTimerService.attendanceStatus || 'absent',
+                    true
+                  );
+                  break;
+
+                case 'timer_paused':
+                  setOfflineTimerState(prev => ({
+                    ...prev,
+                    isPaused: true
+                  }));
+                  broadcastP2PUpdate(event.timerSeconds, false, 'paused', true);
+                  break;
+
+                case 'timer_resumed':
+                  setOfflineTimerState(prev => ({
+                    ...prev,
+                    isPaused: false
+                  }));
+                  broadcastP2PUpdate(event.timerSeconds, true, 'attending', true);
+                  break;
+
+                case 'bssid_unauthorized':
+                case 'wifi_disconnected':
+                  showToast(
+                    event.type === 'bssid_unauthorized'
+                      ? '📶 Left authorized WiFi — timer stopped'
+                      : '📶 WiFi disconnected — timer stopped',
+                    'warning'
+                  );
+                  break;
+
+                case 'missed_random_ring': {
+                  // OfflineTimerService emits { type, randomRing } — derive a stable id from it
+                  const ring = event.randomRing || {};
+                  const missedRingId = ring.randomRingId || ring._id || ring.id || event.ringId || 'unknown';
+                  if (!shownMissedRingIds.current.has(missedRingId)) {
+                    shownMissedRingIds.current.add(missedRingId);
+                    showToast('🔔 Random ring missed — please respond immediately', 'error', 5000);
+                  }
+                  break;
+                }
+
+                case 'wifi_reconnected':
+                  // WiFi reconnected - check if we need to handle reconnection
+                  if (event.needsReconnectionHandling) {
+                    console.log('📶 WiFi reconnected - handling reconnection logic');
+                    handleWiFiReconnectionEvent(event.currentBSSID);
+                  }
+                  break;
+
+                case 'timer_resumed_after_reconnection':
+                  console.log('✅ Timer resumed after reconnection');
+                  setOfflineTimerState(prev => ({
+                    ...prev,
+                    isRunning: true,
+                    isPaused: false,
+                    timerSeconds: event.timerSeconds
+                  }));
+                  broadcastP2PUpdate(event.timerSeconds, true, 'attending', true);
+                  break;
+
+                case 'timer_started_after_reconnection':
+                  console.log('🆕 New lecture started after reconnection');
+                  setOfflineTimerState(prev => ({
+                    ...prev,
+                    isRunning: true,
+                    isPaused: false,
+                    timerSeconds: event.timerSeconds,
+                    currentLecture: event.lecture
+                  }));
+                  broadcastP2PUpdate(event.timerSeconds, true, 'attending', true);
+                  break;
+
+                case 'connectivity_changed':
+                  // Update offline timer state with connectivity info
+                  setOfflineTimerState(prev => ({
+                    ...prev,
+                    isOnline: event.isOnline,
+                    hasInternetConnection: event.hasInternet,
+                    isConnectedToAuthorizedWiFi: event.hasAuthorizedWiFi,
+                    pendingSyncCount: event.pendingSyncs,
+                    __pending_sync: event.__pending_sync
+                  }));
+
+                  // Show connectivity status changes to user
+                  if (!event.hasInternet && event.hasAuthorizedWiFi) {
+                    console.log('📶 App went offline - timer running locally');
+                  } else if (event.hasInternet && event.hasAuthorizedWiFi) {
+                    console.log('📶 App back online - syncing data');
+                  }
+                  break;
+
+                case 'sync_successful':
+                  console.log('✅ Timer sync successful');
+                  setOfflineTimerState(prev => ({
+                    ...prev,
+                    lastSyncTime: event.lastSyncTime,   // update displayed "Last sync" time
+                    attendanceStatus: event.attendanceStatus,
+                    thresholdSeconds: event.thresholdSeconds,
+                    attendanceThreshold: event.attendanceThreshold
+                  }));
+                  break;
+
+                case 'sync_server_error':
+                  // Server is reachable but rejected the sync (403/404/400)
+                  // Keep online status — this is NOT a network failure
+                  console.warn('⚠️ Server rejected sync:', event.message);
+                  if (event.statusCode === 403 && event.message?.includes('check-in')) {
+                    // Show once — don't spam
+                    setOfflineTimerState(prev => ({
+                      ...prev,
+                      isOnline: true,
+                      hasInternetConnection: true,
+                      syncError: 'Check-in required before syncing'
+                    }));
+                  }
+                  break;
+
+                case 'sync_failed':
+                  console.log('⚠️ Timer sync failed:', event.error);
+                  break;
+
+                case 'pending_syncs_completed':
+                  console.log(`✅ Completed ${event.syncedCount} pending syncs, ${event.remainingCount} remaining`);
+                  // Alert removed to avoid spamming - background sync should be silent
+                  break;
+
+                case 'lecture_ended':
+                  // Lecture period has ended - timer automatically stopped
+                  // Don't show alert — auto-continue to next period will handle it
+                  saveAttendanceToServer();
+                  break;
+
+                case 'period_auto_continued':
+                  // Timer auto-started for next period (no face verification needed)
+                  setOfflineTimerState(prev => ({
+                    ...prev,
+                    isRunning: true,
+                    isPaused: false,
+                    timerSeconds: 0,
+                    currentLecture: event.lecture,
+                    attendanceStatus: 'absent',
+                    thresholdSeconds: null
+                  }));
+                  break;
+
+                case 'sync_retry_limit_exceeded':
+                  // Reconnection limit passed — ask user to try again
+                  Alert.alert(
+                    "🔄 Sync Pending",
+                    `You have ${event.pendingCount} attendance records waiting to be synced. The automatic retry limit has been reached.\n\nPlease ensure you have a stable internet connection and try again to update your batch of sync.`,
+                    [
+                      { 
+                        text: "Try Again Now", 
+                        onPress: () => {
+                          OfflineTimerService.retrySyncBatch();
+                        }
+                      },
+                      {
+                        text: "Later",
+                        style: "cancel"
+                      }
+                    ]
+                  );
+                  break;
+              }
+
+              // Update state with current timer state
+              const currentState = OfflineTimerService.getState();
+              setOfflineTimerState(currentState);
+            });
+
+            // Get initial state
+            const initialState = OfflineTimerService.getState();
+            setOfflineTimerState(initialState);
+            setOfflineTimerInitialized(true);
+
+            console.log('✅ OfflineTimerService initialized successfully');
+
+            // Cleanup function
+            return () => {
+              unsubscribe();
+              OfflineTimerService.cleanup();
+            };
+          } else {
+            console.error('❌ Failed to initialize OfflineTimerService');
+          }
+        } catch (error) {
+          console.error('❌ Error initializing OfflineTimerService:', error);
+        }
+      };
+
+      initializeOfflineTimer();
+    }
+  }, [selectedRole, studentId, showLogin, userData, offlineTimerInitialized]);
+
+  // Handle WiFi reconnection events
+  const handleWiFiReconnectionEvent = async (currentBSSID) => {
+    try {
+      console.log('📶 Handling WiFi reconnection event');
+      console.log('   Current BSSID:', currentBSSID);
+      console.log('   Current class info:', currentClassInfo);
+
+      if (!currentClassInfo) {
+        console.log('⚠️ No current class info available for reconnection');
+        return;
+      }
+
+      // Create lecture info from current class
+      const lectureInfo = {
+        subject: currentClassInfo.subject || currentClassInfo.currentLecture,
+        teacher: currentClassInfo.teacher || 'Unknown',
+        room: currentClassInfo.room || 'Unknown',
+        startTime: currentClassInfo.startTime,
+        endTime: currentClassInfo.endTime
+      };
+
+      console.log('📚 Attempting WiFi reconnection with lecture info:', lectureInfo);
+
+      // Call OfflineTimerService to handle reconnection
+      const result = await OfflineTimerService.handleWiFiReconnection(lectureInfo);
+
+      if (!result.success) {
+        console.error('❌ WiFi reconnection failed:', result.error);
+
+        let title = '📶 WiFi Reconnection Failed';
+        let message = result.error;
+
+        // Customize message based on failure reason
+        switch (result.step) {
+          case 'bssid_validation':
+            title = '📶 WiFi Validation Failed';
+            message = 'Unable to validate WiFi connection. Please ensure you are connected to the authorized classroom WiFi.';
+            break;
+          case 'face_verification':
+            title = '👤 Face Verification Failed';
+            message = 'Face verification failed during reconnection. Please try again.';
+            break;
+          default:
+            message = `WiFi reconnection failed: ${result.error}`;
+            break;
+        }
+
+        Alert.alert(title, message, [{ text: 'OK' }]);
+      } else {
+        console.log('✅ WiFi reconnection handled successfully');
+        console.log('   Scenario:', result.scenario);
+        console.log('   Resumed:', result.resumed);
+        console.log('   Timer seconds:', result.timerSeconds);
+
+        // Success message will be shown by the event listener for 
+        // 'timer_resumed_after_reconnection' or 'timer_started_after_reconnection'
+      }
+    } catch (error) {
+      console.error('❌ Error handling WiFi reconnection:', error);
+      Alert.alert(
+        '❌ Reconnection Error',
+        `An error occurred during WiFi reconnection: ${error.message}`,
+        [{ text: 'OK' }]
+      );
+    }
+  };
+
+  // Handle timer start/stop based on current class
+  // isTimerActionInProgress prevents multiple concurrent calls from rapid taps
+  const isTimerActionInProgress = useRef(false);
+
+  const handleTimerStartStop = async () => {
+    if (isTimerActionInProgress.current) return; // debounce — ignore extra taps
+    isTimerActionInProgress.current = true;
+
+    try {
+      // Allow start if either currentClassInfo OR offlinePeriod is active
+      // (offline mode: currentClassInfo may be null but offlinePeriod is valid)
+      const hasActivePeriod = currentClassInfo || (offlinePeriod && !offlinePeriod.isBreak && offlinePeriod.subject);
+      if (!offlineTimerInitialized || !hasActivePeriod) {
+        showToast('⚠️ Timer not available — no active lecture', 'warning');
+        return;
+      }
+
+      if (offlineTimerState.isRunning) {
+        // Stop timer
+        console.log('⏹️ Stopping timer manually');
+        const result = await OfflineTimerService.stopTimer('manual');
+
+        if (result.success) {
+          stopPeriodicSync(); // Stop periodic server sync
+        }
+
+        if (!result.success) {
+          showToast(`❌ Failed to stop timer: ${result.error}`, 'error');
+        }
+      } else {
+      // Start timer with BSSID and face verification
+      console.log('▶️ Starting timer for current class');
+
+      // Check if there's an active period (not a break)
+      if (!offlinePeriod || offlinePeriod.isBreak) {
+        showToast('⚠️ Timer only available during active lectures, not breaks', 'warning');
+        return;
+      }
+
+      // Show loading toast immediately to provide instant UI feedback
+      showToast('🔐 Verifying WiFi & face — please wait…', 'info', 8000);
+
+      // Check if student has been manually marked on the server first
+      // Skip if app knows it's offline to prevent long fetch hangs
+      if (!isOffline) {
+        try {
+          const activePeriod = offlinePeriod?.period || currentClassInfo?.period || 'P1';
+          let pId = activePeriod.toString();
+          if (!pId.startsWith('P')) pId = `P${pId}`;
+
+          console.log(`📡 Checking server manual override status for student ${studentId}, period: ${pId}`);
+          
+          // Use AbortController with 3s timeout to prevent UI hang on spotty connections
+          const controller = new AbortController();
+          const timeoutId = setTimeout(() => controller.abort(), 3000);
+          
+          const statusResponse = await fetch(`${SERVER_BASE_URL}/api/attendance/student/${studentId}/check-manual-mark/${pId}`, {
+            headers: { 'Content-Type': 'application/json' },
+            signal: controller.signal
+          });
+          
+          clearTimeout(timeoutId);
+
+          const statusResult = await statusResponse.json();
+          if (statusResult.success && statusResult.isManuallyMarked) {
+            console.log(`⚠️ Server confirms student is manually marked ${statusResult.status}! Running Shuttle Relay.`);
+            
+            // Sync with the server's manual mark state locally
+            OfflineTimerService.isManuallyMarked = (statusResult.status === 'present');
+            OfflineTimerService.attendanceStatus = statusResult.status;
+            await OfflineTimerService.saveState();
+
+            setOfflineTimerState(prev => ({
+              ...prev,
+              attendanceStatus: statusResult.status
+            }));
+
+            if (statusResult.status === 'present') {
+              showToast('🏃 Shuttle Relay active — present status guaranteed, let\'s catch up!', 'success', 3000);
+            }
+          }
+        } catch (err) {
+          console.warn('⚠️ Server check for manual mark failed or timed out, falling back to local state:', err.message);
+        }
+      } else {
+        console.log('📱 App is offline, skipping manual mark check');
+      }
+
+      // Extract current lecture info — prefer offline schedule (BSSIDStorage) as source of truth
+      // offlinePeriod has the correct subject/teacher/room/time for the current period
+      const lectureInfo = offlinePeriod ? {
+        subject: offlinePeriod.subject || currentClassInfo?.subject,
+        teacher: offlinePeriod.teacher || offlinePeriod.teacherName || currentClassInfo?.teacher || 'Unknown',
+        room: offlinePeriod.room || currentClassInfo?.room || 'Unknown',
+        startTime: offlinePeriod.startTime || currentClassInfo?.startTime,
+        endTime: offlinePeriod.endTime || currentClassInfo?.endTime,
+        period: offlinePeriod.period || null,
+      } : {
+        subject: currentClassInfo?.subject,
+        teacher: currentClassInfo?.teacher || 'Unknown',
+        room: currentClassInfo?.room || 'Unknown',
+        startTime: currentClassInfo?.startTime,
+        endTime: currentClassInfo?.endTime,
+        period: currentClassInfo?.period || null,
+      };
+
+      const result = await OfflineTimerService.startTimer(lectureInfo);
+
+      if (result.success) {
+        startPeriodicSync(); // Start periodic server sync for admin panel visibility
+      }
+
+      if (!result.success) {
+        let title = '❌ Cannot Start Timer';
+        let message = result.error || 'Failed to start timer';
+
+        // Provide specific error messages based on the step that failed
+        switch (result.step) {
+          case 'manual_override_frozen':
+            title = '👨‍🏫 Manual Override Active';
+            message = 'Your attendance has been manually marked by the teacher for this period. You cannot start the timer.';
+            break;
+          case 'bssid_validation':
+            title = '📶 WiFi Validation Failed';
+            message = result.error + '\n\nPlease ensure you are connected to the correct classroom WiFi network.';
+            break;
+          case 'face_verification':
+            title = '👤 Face Verification Failed';
+            if (result.reason === 'no_face_enrolled') {
+              message = 'Face not enrolled. Please use the Face Enrollment app to enroll your face first.';
+            } else if (result.reason === 'face_not_matched') {
+              message = result.error + '\n\nPlease ensure good lighting and look directly at the camera.';
+            } else {
+              message = result.error + '\n\nPlease try again or contact support if the issue persists.';
+            }
+            break;
+          default:
+            // Keep default message
+            break;
+        }
+
+        Alert.alert(title, message, [
+          { text: 'OK' },
+          // Retry button for face verification failures (except no_face_enrolled)
+          ...(result.step === 'face_verification' && result.reason !== 'no_face_enrolled'
+            ? [{ text: '🔄 Retry', onPress: () => handleTimerStartStop() }]
+            : []
+          ),
+          ...(result.step === 'face_verification' && result.reason === 'no_face_enrolled'
+            ? [{
+              text: 'Open Enrollment App', onPress: () => {
+                console.log('User wants to open enrollment app');
+              }
+            }]
+            : []
+          )
+        ]);
+      } else {
+        // Success - timer started — vibrate to confirm face verification passed
+        try { Vibration.vibrate([0, 80, 60, 80]); } catch (_) { }
+        showToast('✅ Timer started — attendance tracking active', 'success');
+        
+        // Show permission pop up for background activity to prevent OS killing
+        try {
+          AsyncStorage.getItem('@hasShownBgPermissionPopup').then(hasShown => {
+            if (!hasShown) {
+              Alert.alert(
+                'Prevent Timer from Stopping ⚠️',
+                'To ensure your timer runs perfectly in the background (especially on OnePlus, Xiaomi, Realme devices), please click "Settings" and allow "Background Activity" or "Auto-Start" for this app.',
+                [
+                  { text: 'Skip', style: 'cancel', onPress: () => AsyncStorage.setItem('@hasShownBgPermissionPopup', 'true') },
+                  { 
+                    text: '⚙️ Settings', 
+                    onPress: () => {
+                      AsyncStorage.setItem('@hasShownBgPermissionPopup', 'true');
+                      OfflineTimerService.openPermissionSettings();
+                    } 
+                  }
+                ]
+              );
+            }
+          });
+        } catch (e) {
+          console.error('Error showing permission popup:', e);
+        }
+      }
+      }
+    } catch (err) {
+      console.error('❌ handleTimerStartStop error:', err);
+    } finally {
+      isTimerActionInProgress.current = false;
+    }
+  };
+
+  /** True when ring was sent over LAN/WebRTC only — no server DB record */
+  const isLocalP2PRing = (ringData) => {
+    if (!ringData) return false;
+    if (ringData.isP2P) return true;
+    const id = ringData.randomRingId || '';
+    // p2p_ring_ / lan_ring_ = offline LAN only. ring_* is also used by server — not P2P-only.
+    return id.startsWith('p2p_ring_') || id.startsWith('lan_ring_');
+  };
+
+  /** Unified random ring verification — P2P/offline first, server when online, local fallback on failure */
+  const processRandomRingVerification = async (ringInfo, status = 'verified') => {
+    const isPresent = status === 'present';
+    const responseStatus = isPresent ? 'present' : 'verified';
+    const resumeReason = isPresent ? 'random_ring_present' : 'random_ring_face_verified';
+
+    if (isLocalP2PRing(ringInfo)) {
+      console.log('[Ring] Local P2P ring — verifying offline');
+      await sendP2PRingResponse(responseStatus, ringInfo);
+      await completeLocalRingVerification(ringInfo, resumeReason);
+      return { success: true, mode: 'p2p' };
+    }
+
+    const hasInternet = OfflineTimerService.hasInternetConnection !== false;
+    if (!hasInternet) {
+      console.log('[Ring] No internet — verifying locally and notifying teacher via LAN');
+      await sendP2PRingResponse(responseStatus, ringInfo);
+      await completeLocalRingVerification(ringInfo, 'random_ring_offline');
+      return { success: true, mode: 'offline_local' };
+    }
+
+    let currentBSSID = null;
+    try {
+      const wifiResult = await NativeWiFiService.validateWiFiWithPermissions();
+      if (wifiResult?.currentBSSID) currentBSSID = wifiResult.currentBSSID;
+      else if (wifiResult?.bssid) currentBSSID = wifiResult.bssid;
+    } catch (_) {}
+
+    try {
+      const endpoint = isPresent
+        ? POST_ATTENDANCE_RANDOM_RING_RESPONSE
+        : (ringInfo.isRejection ? POST_RANDOM_RING_VERIFY_AFTER_REJECTION : POST_RANDOM_RING_VERIFY_DIRECT);
+      const body = isPresent
+        ? {
+            studentId: studentIdRef.current,
+            randomRingId: ringInfo.randomRingId,
+            responseTime: new Date().toISOString(),
+          }
+        : {
+            randomRingId: ringInfo.randomRingId,
+            studentId: studentIdRef.current,
+            bssid: currentBSSID,
+          };
+      const res = await fetch(endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      const result = await res.json();
+      if (result.success) {
+        console.log('[Ring] Server accepted verification');
+        return { success: true, mode: 'server' };
+      }
+      console.warn('[Ring] Server rejected — local fallback:', result.error);
+    } catch (err) {
+      console.warn('[Ring] Server unreachable — local fallback:', err.message);
+    }
+
+    // Server failed or ring not in DB — still resume timer and notify teacher via P2P
+    await sendP2PRingResponse(responseStatus, ringInfo);
+    await completeLocalRingVerification(ringInfo, 'random_ring_server_fallback');
+    return { success: true, mode: 'fallback' };
+  };
+
+  /** Send ring response to teacher via WebRTC + LAN (works offline) */
+  const sendP2PRingResponse = async (status, ringData) => {
+    const payload = {
+      type: 'RANDOM_RING_RESPONSE',
+      studentId: studentIdRef.current,
+      randomRingId: ringData?.randomRingId,
+      status,
+    };
+    if (socketRef.current?.rtcDC?.readyState === 'open') {
+      try {
+        socketRef.current.rtcDC.send(JSON.stringify(payload));
+        console.log('[P2P] Sent RANDOM_RING_RESPONSE via WebRTC:', status);
+      } catch (e) {
+        console.warn('[P2P] WebRTC response failed:', e.message);
+      }
+    }
+    try {
+      await LanP2PService.sendMessage('RANDOM_RING_RESPONSE', {
+        studentId: studentIdRef.current,
+        randomRingId: ringData?.randomRingId,
+        status,
+      });
+    } catch (e) {
+      console.warn('[LAN] LAN response failed:', e.message);
+    }
+    // Server socket relay fallback — the teacher is in the class room, so this guarantees
+    // the response reaches them even if LAN UDP and WebRTC both drop the packet.
+    const relaySem = (semesterRef.current || currentClassRoomRef.current?.semester);
+    const relayBranch = (branchRef.current || currentClassRoomRef.current?.branch);
+    if (socketRef.current?.connected && relaySem && relayBranch) {
+      try {
+        socketRef.current.emit('p2p_relay_broadcast', {
+          semester: relaySem.toString(),
+          branch: relayBranch,
+          message: {
+            type: 'RANDOM_RING_RESPONSE',
+            payload: { studentId: studentIdRef.current, randomRingId: ringData?.randomRingId, status },
+            ts: Date.now(),
+          },
+        });
+        console.log('[Ring] Sent RANDOM_RING_RESPONSE via socket relay');
+      } catch (e) {
+        console.warn('[Ring] socket relay response failed:', e.message);
+      }
+    }
+  };
+
+  /** Resume timer and dismiss ring banner after verification */
+  const completeLocalRingVerification = async (ringData, reason) => {
+    const data = ringData;
+    const pausedSeconds = data?.ringPauseTime
+      ? Math.max(0, (_appGetBootMs() - data.ringPauseTime) / 1000)
+      : 0;
+
+    console.log(`[Ring] Completing local verification (${reason}), paused ${pausedSeconds.toFixed(1)}s`);
+
+    if (OfflineTimerService.isRunning) {
+      if (OfflineTimerService.isPaused) {
+        await OfflineTimerService.resumeTimer(reason, pausedSeconds);
+      } else if (pausedSeconds > 0) {
+        OfflineTimerService.timerSeconds += Math.floor(pausedSeconds);
+        await OfflineTimerService.saveState();
+        OfflineTimerService.notifyListeners({
+          type: 'timer_tick',
+          timerSeconds: OfflineTimerService.timerSeconds,
+        });
+      }
+    }
+
+    setOfflineTimerState(prev => ({
+      ...prev,
+      isRunning: true,
+      isPaused: false,
+      timerSeconds: OfflineTimerService.timerSeconds || prev.timerSeconds,
+    }));
+    setRandomRingData(null);
+  };
+
+  /** Handle incoming LAN / server-relay P2P packets */
+  const handleLanPacket = (pkt) => {
+    const type = pkt.type;
+    const payload = pkt.payload || pkt;
+
+    if (selectedRoleRef.current === 'student') {
+      if (type === 'RANDOM_RING_TRIGGER') {
+        console.log(`[LAN] 🚨 RANDOM_RING_TRIGGER Packet ${pkt.packetId}`);
+        const isP2PRing = payload.isP2P || pkt.isP2P;
+        const currentPeriod = offlinePeriodRef.current;
+        const hasActivePeriod = currentPeriod && !currentPeriod.isBreak && currentPeriod.subject;
+        if (!hasActivePeriod && !isP2PRing) {
+          console.log('[LAN] Ignoring ring — no active period (non-P2P)');
+          return;
+        }
+        if (!hasActivePeriod && isP2PRing) {
+          console.log('[LAN] Accepting offline P2P ring despite no cached active period');
+        }
+
+        const ringPauseTime = _appGetBootMs();
+        const lanRingId = payload.randomRingId || pkt.packetId || ('p2p_ring_' + Date.now());
+        OfflineTimerService.pauseTimer('random_ring');
+        setRandomRingData({
+          randomRingId: lanRingId,
+          teacherId: payload.teacherId || pkt.sender,
+          timestamp: Date.now(),
+          expiresAt: Date.now() + 60000,
+          ringPauseTime,
+          isP2P: true,
+        });
+        // Safety auto-resume (parity with the socket ring path) so the timer never
+        // freezes indefinitely if the accept is lost over LAN/WebRTC/socket.
+        setTimeout(() => {
+          setRandomRingData(prev => {
+            if (prev && prev.randomRingId === lanRingId) {
+              console.log('⏰ LAN random ring timeout — resuming timer');
+              const pausedSeconds = prev.ringPauseTime ? (_appGetBootMs() - prev.ringPauseTime) / 1000 : 0;
+              OfflineTimerService.resumeTimer('random_ring_timeout', pausedSeconds);
+              return null;
+            }
+            return prev;
+          });
+        }, 240000);
+      } else if (type === 'RANDOM_RING_ACCEPTED') {
+        // Broadcast accept — only act if it's addressed to this student.
+        const acceptedFor = payload.enrollmentNo;
+        if (acceptedFor && acceptedFor !== studentIdRef.current) {
+          return;
+        }
+        console.log(`[LAN] ✅ RANDOM_RING_ACCEPTED Packet ${pkt.packetId}`);
+        setRandomRingData(prev => {
+          if (prev) {
+            const pausedSeconds = prev.ringPauseTime
+              ? (_appGetBootMs() - prev.ringPauseTime) / 1000
+              : 0;
+            OfflineTimerService.resumeTimer('random_ring_accepted', pausedSeconds);
+          }
+          return null;
+        });
+      } else if (type === 'SESSION_END') {
+        console.log(`[LAN] SESSION_END received`);
+        if (OfflineTimerService.isRunning) {
+          OfflineTimerService.stopTimer('session_end_lan');
+        }
+      }
+    } else if (selectedRoleRef.current === 'teacher') {
+      if (type === 'TIMER_UPDATE') {
+        const enrollmentNo = payload.studentId || pkt.sender;
+        console.warn(`[LAN] ⏱️ TIMER_UPDATE from ${enrollmentNo}: ${payload.timerValue}s (running=${payload.isRunning}, status=${payload.status})`);
+        setStudents(prev => {
+          const match = prev.some(s => s.enrollmentNo === enrollmentNo);
+          console.warn(`[LAN] Student ${enrollmentNo} in teacher class list? ${match ? 'YES' : 'NO'}. List: ${prev.map(s => s.enrollmentNo).join(', ')}`);
+          return prev.map(s => {
+            if (s.enrollmentNo === enrollmentNo) {
+              return {
+                ...s,
+                timerValue: payload.timerValue,
+                isRunning: payload.isRunning,
+                status: payload.status,
+                receivedViaP2P: true,
+                lastP2PAt: Date.now(), // stamp so teacher UI shows blue digits for live P2P
+                attendanceSession: {
+                  ...(s.attendanceSession || {}),
+                  isRunning: payload.isRunning,
+                  status: payload.status,
+                  attendedSeconds: payload.timerValue,
+                },
+              };
+            }
+            return s;
+          });
+        });
+      } else if (type === 'RANDOM_RING_RESPONSE') {
+        const enrollmentNo = payload.studentId || pkt.sender;
+        console.log(`[LAN] 🔔 RANDOM_RING_RESPONSE from ${enrollmentNo}: ${payload.status}`);
+        setStudents(prev => prev.map(s =>
+          s.enrollmentNo === enrollmentNo
+            ? { ...s, p2pRingStatus: payload.status, p2pRingVerified: payload.status === 'verified' }
+            : s
+        ));
+        LanP2PService.sendMessage('RANDOM_RING_ACCEPTED', {
+          enrollmentNo,
+          status: payload.status,
+          randomRingId: payload.randomRingId,
+        }).catch(() => {});
+        // Socket relay fallback so the student's timer resumes even if LAN UDP drops the accept.
+        const accSem = (semesterRef.current || currentClassRoomRef.current?.semester);
+        const accBranch = (branchRef.current || currentClassRoomRef.current?.branch);
+        if (socketRef.current?.connected && accSem && accBranch) {
+          socketRef.current.emit('p2p_relay_broadcast', {
+            semester: accSem.toString(),
+            branch: accBranch,
+            message: {
+              type: 'RANDOM_RING_ACCEPTED',
+              payload: { enrollmentNo, status: payload.status, randomRingId: payload.randomRingId },
+              ts: Date.now(),
+            },
+          });
+        }
+      } else if (type === 'ACK' || pkt.type === 'ACK') {
+        // Handled by LanP2PService pendingAcks
+      }
+    }
+  };
+
+  /** Initialize LAN UDP P2P — primary classroom channel */
+  const initLanP2P = async (role, enrollmentNo) => {
+    if (lanInitForRef.current === enrollmentNo && lanInitializedRef.current) return;
+    if (lanInitForRef.current && lanInitForRef.current !== enrollmentNo) {
+      await LanP2PService.shutdown();
+      lanInitializedRef.current = false;
+    }
+    const ok = await LanP2PService.initialize(role, enrollmentNo);
+    if (!ok) return;
+    lanInitializedRef.current = true;
+    lanInitForRef.current = enrollmentNo;
+
+    LanP2PService.setSocketRelay(async (type, payload, packetId, targets) => {
+      if (!socketRef.current?.connected) return;
+      const message = { type, payload, packetId, ts: Date.now() };
+      if (targets && targets.length > 0) {
+        for (const t of targets) {
+          socketRef.current.emit('p2p_relay', { targetEnrollmentNo: t, message });
+        }
+      } else if (semesterRef.current && branchRef.current) {
+        socketRef.current.emit('p2p_relay_broadcast', {
+          semester: semesterRef.current,
+          branch: branchRef.current,
+          message,
+        });
+      }
+    });
+
+    if (lanUnsubscribeRef.current) lanUnsubscribeRef.current();
+    lanUnsubscribeRef.current = LanP2PService.addListener(handleLanPacket);
+    console.log(`[LAN] P2P ready as ${role} (${LanP2PService.getLocalIp()})`);
+  };
+
+  const setupSocket = () => {
+    console.log('🔌🔌🔌 setupSocket() called - Initializing socket connection...');
+    console.log('🔌 SOCKET_URL:', SOCKET_URL);
+    console.log('🔌 Current role:', selectedRole);
+    console.log('🔌 Current studentId:', studentId);
+
+    // Disconnect existing socket if any
+    if (socketRef.current) {
+      console.log('🔌 Disconnecting existing socket');
+      
+      // Clean up student-side WebRTC if any to prevent resource leaks
+      if (socketRef.current.rtcDC) {
+        try {
+          socketRef.current.rtcDC.onmessage = null;
+          socketRef.current.rtcDC.onopen = null;
+          socketRef.current.rtcDC.onclose = null;
+          socketRef.current.rtcDC.close();
+        } catch (e) {}
+        socketRef.current.rtcDC = null;
+      }
+      if (socketRef.current.rtcPC) {
+        try {
+          socketRef.current.rtcPC.onicecandidate = null;
+          socketRef.current.rtcPC.ondatachannel = null;
+          socketRef.current.rtcPC.onconnectionstatechange = null;
+          socketRef.current.rtcPC.close();
+        } catch (e) {}
+        socketRef.current.rtcPC = null;
+      }
+
+      if (socketRef.current.pingInterval) {
+        clearInterval(socketRef.current.pingInterval);
+        socketRef.current.pingInterval = null;
+      }
+      socketRef.current.disconnect();
+      socketRef.current.removeAllListeners();
+    }
+
+    console.log('🔌 Creating new socket.io connection...');
+    console.log('🔌 URL:', SOCKET_URL);
+    console.log('🔌 io function exists:', typeof io);
+    console.log('🔌 io function type:', typeof io);
+
+    try {
+      socketRef.current = io(SOCKET_URL, {
+        reconnection: true,
+        reconnectionDelay: 1000,
+        reconnectionAttempts: 10,
+        transports: ['websocket', 'polling'],
+        timeout: 20000,
+        forceNew: true
+      });
+
+      console.log('🔌 Socket object created:', socketRef.current ? 'YES' : 'NO');
+      console.log('🔌 Socket connecting:', socketRef.current?.connecting);
+      console.log('🔌 Socket connected:', socketRef.current?.connected);
+    } catch (error) {
+      console.error('❌❌❌ FAILED TO CREATE SOCKET:', error);
+      console.error('❌ Error message:', error.message);
+      console.error('❌ Error stack:', error.stack);
+      return;
+    }
+
+    socketRef.current.on('connect', async () => {
+      console.log('✅✅✅ SOCKET CONNECTED TO SERVER ✅✅✅');
+      console.log('✅ Socket ID:', socketRef.current.id);
+      console.log('✅ Transport:', socketRef.current.io.engine.transport.name);
+      console.log('✅ Connected at:', new Date().toISOString());
+
+      // Immediately identify this student to the server so teachers can route P2P offers
+      const identifyEnrollment = studentIdRef.current;
+      if (identifyEnrollment) {
+        initLanP2P('student', identifyEnrollment);
+        socketRef.current.emit('student_identify', {
+          enrollmentNo: identifyEnrollment,
+          semester: semesterRef.current?.toString(),
+          branch: branchRef.current,
+          lanIp: LanP2PService.getLocalIp(),
+        });
+      } else {
+        // Try to identify from AsyncStorage on cold start
+        try {
+          const storedUserData = await AsyncStorage.getItem('@user_data');
+          const storedRole = await AsyncStorage.getItem('@user_role');
+          const role = storedRole ? JSON.parse(storedRole) : null;
+          if (role === 'student' && storedUserData) {
+            const parsed = JSON.parse(storedUserData);
+            if (parsed.enrollmentNo) {
+              console.log('📡 Cold-start student_identify:', parsed.enrollmentNo);
+              initLanP2P('student', parsed.enrollmentNo);
+              socketRef.current.emit('student_identify', {
+                enrollmentNo: parsed.enrollmentNo,
+                semester: parsed.semester?.toString(),
+                branch: parsed.branch || parsed.course,
+                lanIp: LanP2PService.getLocalIp(),
+              });
+            }
+          }
+        } catch (e) {
+          console.warn('⚠️ student_identify cold-start failed:', e.message);
+        }
+      }
+
+      // Check for offline session and sync
+      try {
+        const offlineSessionData = await AsyncStorage.getItem('offline_session');
+        if (offlineSessionData) {
+          const data = JSON.parse(offlineSessionData);
+          const offlineDuration = Math.floor((_appGetBootMs() - data.startTime) / 1000);
+
+          console.log('🔄 Syncing offline attendance...');
+          console.log(`   Offline duration: ${offlineDuration}s (${Math.floor(offlineDuration / 60)}m)`);
+
+          // Sync with server
+          const response = await fetch(POST_ATTENDANCE_OFFLINE_SYNC, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              studentId,
+              offlineStartTime: data.startTime,
+              offlineEndTime: _appGetBootMs(),
+              offlineDuration,
+              lastKnownSeconds: data.lastKnownSeconds,
+              lectureSubject: data.lectureSubject
+            })
+          });
+
+          const result = await response.json();
+
+          if (result.success) {
+            if (result.missedRandomRing) {
+              // Random Ring was missed during offline — show only once
+              const missedId = result.ringId || 'offline_sync';
+              if (!shownMissedRingIds.current.has(missedId)) {
+                shownMissedRingIds.current.add(missedId);
+                alert(`⚠️ Random Ring Missed\n\nA Random Ring was triggered while you were offline.\n\nYour attendance has been capped at ${result.cappedMinutes} minutes.`);
+              }
+              // Timer removed - period-based attendance
+            } else if (result.teacherAccepted) {
+              // Teacher accepted during offline
+              alert(`✅ Teacher Accepted\n\nYour teacher accepted you during offline period.\n\nFull offline time (${Math.floor(offlineDuration / 60)} minutes) has been counted.`);
+            } else {
+              // Normal sync
+              console.log(`✅ Offline time synced: ${Math.floor(offlineDuration / 60)} minutes`);
+            }
+          }
+
+          // Clear offline session
+          await AsyncStorage.removeItem('offline_session');
+        }
+      } catch (error) {
+        console.error('❌ Error syncing offline session:', error);
+      }
+
+      // Refresh timetable and BSSID schedule on reconnection
+      // This ensures students get latest data if changes were made while they were offline
+      if (selectedRoleRef.current === 'student') {
+        console.log('🔄 Refreshing data after reconnection...');
+
+        // Refresh timetable
+        if (semesterRef.current && branchRef.current) {
+          console.log('📅 Fetching latest timetable...');
+          await fetchTimetable(semesterRef.current, branchRef.current);
+        }
+
+        // Refresh BSSID schedule - get enrollment number from storage
+        try {
+          const storedUserData = await AsyncStorage.getItem('@user_data');
+          if (storedUserData) {
+            const parsedUserData = JSON.parse(storedUserData);
+            if (parsedUserData.enrollmentNo) {
+              console.log('📶 Fetching latest BSSID schedule (forced refresh)...');
+              await fetchDailyBSSIDSchedule(parsedUserData.enrollmentNo, true); // Force refresh
+            }
+          }
+        } catch (error) {
+          console.error('❌ Error refreshing BSSID schedule:', error);
+        }
+
+        console.log('✅ Data refresh complete');
+      }
+
+      // Re-send current status if student is active (period-based attendance)
+      if (selectedRoleRef.current === 'student' && studentIdRef.current) {
+        console.log('📡 Re-sending student status after reconnect');
+        const currentSem = semesterRef.current;
+        const currentBranch = branchRef.current;
+        if (currentSem && currentBranch) {
+          joinClassRoom(currentSem?.toString(), currentBranch);
+        } else {
+          // React state not hydrated yet — fallback to AsyncStorage
+          try {
+            const storedUserData = await AsyncStorage.getItem('@user_data');
+            if (storedUserData) {
+              const parsed = JSON.parse(storedUserData);
+              const storedSem = parsed.semester?.toString();
+              const storedBranch = parsed.branch || parsed.course;
+              if (storedSem && storedBranch && socketRef.current?.connected) {
+                console.log('📡 Auto-joining class room from stored profile:', storedSem, storedBranch);
+                socketRef.current.emit('join_class_room', { semester: storedSem, branch: storedBranch });
+                currentClassRoomRef.current = { semester: storedSem, branch: storedBranch };
+              }
+            }
+          } catch (e) {
+            console.warn('⚠️ Could not load stored user data for auto-join:', e.message);
+          }
+        }
+      } else if (!selectedRoleRef.current || selectedRoleRef.current === 'student') {
+        // Socket connected but role not yet set — preemptively join from AsyncStorage
+        // This handles cold-start scenario where socket connects before React state loads
+        try {
+          const [storedUserData, storedRole] = await Promise.all([
+            AsyncStorage.getItem('@user_data'),
+            AsyncStorage.getItem('@user_role'),
+          ]);
+          const role = storedRole ? JSON.parse(storedRole) : null;
+          if (role === 'student' && storedUserData) {
+            const parsed = JSON.parse(storedUserData);
+            const storedSem = parsed.semester?.toString();
+            const storedBranch = parsed.branch || parsed.course;
+            const storedStudentId = parsed.enrollmentNo;
+            if (storedSem && storedBranch && storedStudentId && socketRef.current?.connected) {
+              console.log('🚀 Cold-start: Auto-joining class room for student:', storedStudentId, storedSem, storedBranch);
+              socketRef.current.emit('join_class_room', { semester: storedSem, branch: storedBranch });
+              currentClassRoomRef.current = { semester: storedSem, branch: storedBranch };
+            }
+          }
+        } catch (e) {
+          console.warn('⚠️ Cold-start auto-join failed:', e.message);
+        }
+      }
+    });
+
+    socketRef.current.on('disconnect', async (reason) => {
+      console.log('❌❌❌ SOCKET DISCONNECTED ❌❌❌');
+      console.log('❌ Reason:', reason);
+      console.log('❌ Disconnected at:', new Date().toISOString());
+
+      // Period-based attendance - no offline tracking needed
+    });
+
+    socketRef.current.on('connect_error', (error) => {
+      console.log('❌❌❌ SOCKET CONNECTION ERROR ❌❌❌');
+      console.log('❌ Error:', error.message);
+      console.log('❌ Error type:', error.type);
+      console.log('❌ Error description:', error.description);
+      console.log('❌ Full error:', JSON.stringify(error, null, 2));
+    });
+
+    socketRef.current.on('reconnect_attempt', (attemptNumber) => {
+      console.log(`🔄 Socket reconnect attempt #${attemptNumber}`);
+    });
+
+    socketRef.current.on('reconnect', async (attemptNumber) => {
+      console.log(`✅ Socket reconnected after ${attemptNumber} attempts`);
+
+      // Re-identify student immediately — reconnect gives a new socket.id,
+      // so the server's studentSocketMap must be updated before teacher
+      // can route WebRTC P2P offers to us.
+      if (selectedRoleRef.current === 'student' && studentIdRef.current) {
+        initLanP2P('student', studentIdRef.current);
+        socketRef.current.emit('student_identify', {
+          enrollmentNo: studentIdRef.current,
+          semester: semesterRef.current?.toString(),
+          branch: branchRef.current,
+          lanIp: LanP2PService.getLocalIp(),
+        });
+        console.log(`📱 Re-identified student on reconnect: ${studentIdRef.current}`);
+      }
+
+      if (selectedRoleRef.current === 'student') {
+        console.log('🔄 Refreshing data after reconnection...');
+
+        const currentSem = semesterRef.current;
+        const currentBranch = branchRef.current;
+        if (currentSem && currentBranch) {
+          console.log('📅 Fetching latest timetable...');
+          await fetchTimetable(currentSem, currentBranch);
+          // Rejoin class room on reconnect
+          joinClassRoom(currentSem?.toString(), currentBranch);
+        } else {
+          // Fallback to AsyncStorage if React state not yet hydrated
+          try {
+            const storedUserData = await AsyncStorage.getItem('@user_data');
+            if (storedUserData) {
+              const parsed = JSON.parse(storedUserData);
+              const storedSem = parsed.semester?.toString();
+              const storedBranch = parsed.branch || parsed.course;
+              if (storedSem && storedBranch && socketRef.current?.connected) {
+                console.log('🔄 Reconnect: Auto-joining from stored profile:', storedSem, storedBranch);
+                socketRef.current.emit('join_class_room', { semester: storedSem, branch: storedBranch });
+                currentClassRoomRef.current = { semester: storedSem, branch: storedBranch };
+              }
+            }
+          } catch (e) {
+            console.warn('⚠️ Reconnect auto-join failed:', e.message);
+          }
+        }
+
+        // Refresh BSSID schedule - get enrollment number from storage
+        try {
+          const storedUserData = await AsyncStorage.getItem('@user_data');
+          if (storedUserData) {
+            const parsedUserData = JSON.parse(storedUserData);
+            if (parsedUserData.enrollmentNo) {
+              console.log('📶 Fetching latest BSSID schedule (forced refresh)...');
+              await fetchDailyBSSIDSchedule(parsedUserData.enrollmentNo, true); // Force refresh
+            }
+          }
+        } catch (error) {
+          console.error('❌ Error refreshing BSSID schedule:', error);
+        }
+
+        console.log('✅ Data refresh complete');
+      } else if (selectedRoleRef.current === 'teacher') {
+        // Teacher reconnect: refresh student list and rejoin class room if active
+        console.log('\u{1F468}\u200d\u{1F3EB} Teacher reconnecting - refreshing student list...');
+        await fetchStudents();
+        // Re-establish P2P connections to active students after reconnect.
+        // 2s delay so fetchStudents() result propagates to state first.
+        setTimeout(() => {
+          if (typeof teacherPreWarmP2P === 'function') {
+            console.log('[P2P] Re-warming connections after teacher reconnect...');
+            teacherPreWarmP2P();
+          }
+        }, 2000);
+      }
+    });
+
+    socketRef.current.on('reconnect_error', (error) => {
+      console.log('❌ Socket reconnect error:', error.message);
+    });
+
+    socketRef.current.on('reconnect_failed', () => {
+      console.log('❌ Socket reconnect failed - giving up');
+    });
+
+    // --- Server P2P relay fallback (when LAN/WebRTC fails) ---
+    socketRef.current.on('p2p_relay', (message) => {
+      console.log(`[RELAY] RECEIVED via server: type=${message.type} packet=${message.packetId}`);
+      handleLanPacket({ ...message, via: 'server' });
+    });
+
+    // --- WebRTC P2P (Student Side) ---
+    socketRef.current.on('webrtc_offer', async (data) => {
+      if (selectedRoleRef.current === 'teacher') return;
+      console.log('📶 WebRTC P2P Offer received from Teacher:', data.teacherId);
+      
+      // Clean up previous peer connection if any to prevent leaks and duplicate connections
+      if (socketRef.current.rtcDC) {
+        try {
+          socketRef.current.rtcDC.onmessage = null;
+          socketRef.current.rtcDC.onopen = null;
+          socketRef.current.rtcDC.onclose = null;
+          socketRef.current.rtcDC.close();
+        } catch (e) {}
+        socketRef.current.rtcDC = null;
+      }
+      if (socketRef.current.rtcPC) {
+        try {
+          socketRef.current.rtcPC.onicecandidate = null;
+          socketRef.current.rtcPC.ondatachannel = null;
+          socketRef.current.rtcPC.onconnectionstatechange = null;
+          socketRef.current.rtcPC.close();
+        } catch (e) {}
+        socketRef.current.rtcPC = null;
+      }
+
+      const pc = new RTCPeerConnection(RTC_CONFIG);
+      socketRef.current.rtcPC = pc;
+
+      pc.onicecandidate = (event) => {
+        if (event.candidate) {
+          socketRef.current.emit('webrtc_ice_candidate', {
+            targetSocketId: data.teacherSocketId,
+            candidate: event.candidate
+          });
+        }
+      };
+
+      pc.ondatachannel = (event) => {
+        const dc = event.channel;
+        socketRef.current.rtcDC = dc;
+        console.log('⚡ P2P DataChannel connected!');
+        
+        dc.onmessage = (msgEvent) => {
+          try {
+            const msg = JSON.parse(msgEvent.data);
+            if (msg.type === 'RANDOM_RING_TRIGGER') {
+              console.log('🚨 P2P RANDOM RING TRIGGERED INSTANTLY!');
+              try {
+                dc.send(JSON.stringify({ type: 'RANDOM_RING_ACK', ackFor: msg.packetId || 'webrtc' }));
+              } catch (sendErr) {
+                console.warn('Failed sending P2P ACK:', sendErr.message);
+              }
+              handleLanPacket({ type: 'RANDOM_RING_TRIGGER', payload: msg, packetId: msg.packetId || ('webrtc_' + Date.now()), sender: data.teacherId });
+            } else if (msg.type === 'RANDOM_RING_ACCEPTED') {
+              handleLanPacket({ type: 'RANDOM_RING_ACCEPTED', payload: msg, packetId: msg.packetId });
+            } else if (msg.type === 'SESSION_END') {
+              handleLanPacket({ type: 'SESSION_END', payload: msg, packetId: msg.packetId });
+            }
+          } catch(e) {}
+        };
+      };
+
+      await pc.setRemoteDescription(new RTCSessionDescription(data.offer));
+      const answer = await pc.createAnswer();
+      await pc.setLocalDescription(answer);
+
+      socketRef.current.emit('webrtc_answer', {
+        targetSocketId: data.teacherSocketId,
+        answer: pc.localDescription,
+        studentId: studentIdRef.current
+      });
+    });
+
+    socketRef.current.on('webrtc_ice_candidate', (data) => {
+      if (selectedRoleRef.current === 'student') {
+        // Student: single rtcPC connection back to teacher
+        if (socketRef.current.rtcPC && data.candidate) {
+          socketRef.current.rtcPC.addIceCandidate(new RTCIceCandidate(data.candidate))
+            .catch(e => console.warn('[P2P] ICE add failed (student):', e.message));
+        }
+      } else if (selectedRoleRef.current === 'teacher') {
+        // Teacher: find the right PC by studentId sent from server
+        const enrollmentNo = data.studentId;
+        const pc = enrollmentNo && teacherRtcConnections.current[enrollmentNo];
+        if (pc && data.candidate) {
+          pc.addIceCandidate(new RTCIceCandidate(data.candidate))
+            .catch(e => console.warn('[P2P] ICE add failed (teacher):', e.message));
+        }
+      }
+    });
+
+    // Test socket communication with ping/pong
+    socketRef.current.on('pong', (latency) => {
+      // pong received — latency tracked silently
+    });
+
+    // Send a keep-alive ping every 60 seconds
+    const pingInterval = setInterval(() => {
+      if (socketRef.current && socketRef.current.connected) {
+        socketRef.current.emit('ping');
+      }
+    }, 60000);
+
+    // Store interval ref for cleanup
+    socketRef.current.pingInterval = pingInterval;
+
+    socketRef.current.on('student_update', (data) => {
+      console.log('📥 Received student update:', data);
+
+      // For teachers: Instant updates for all students
+      if (selectedRoleRef.current === 'teacher') {
+        console.log('👨‍🏫 Teacher received update for student:', data.enrollmentNo);
+        console.log('   Update data:', { status: data.status, isRunning: data.isRunning, enrollmentNo: data.enrollmentNo });
+
+        setStudents(prev => {
+          // server always sends enrollmentNo — match on that only
+          const existingIndex = prev.findIndex(s =>
+            s.enrollmentNo && s.enrollmentNo === data.enrollmentNo
+          );
+
+          if (existingIndex >= 0) {
+            const updated = [...prev];
+            const oldStudent = updated[existingIndex];
+            updated[existingIndex] = { ...oldStudent, ...data };
+            console.log('✅ Updated student:', oldStudent.name, '| Status:', data.status, '| Running:', data.isRunning);
+            return updated;
+          } else {
+            console.log('⚠️ Student not found in list, enrollmentNo:', data.enrollmentNo);
+            console.log('   Current list has', prev.length, 'students');
+            fetchStudents();
+            return prev;
+          }
+        });
+      } else {
+        // For non-teachers, match by enrollmentNo only
+        setStudents(prev => prev.map(s =>
+          s.enrollmentNo === data.enrollmentNo ? { ...s, ...data } : s
+        ));
+      }
+    });
+
+    socketRef.current.on('student_registered', () => {
+      console.log('📥 Student registered event received');
+      fetchStudents();
+    });
+
+    // Listen for Random Ring verification updates (teachers only)
+    socketRef.current.on('random_ring_student_verified', (data) => {
+      console.log('✅ Random Ring verification update:', data);
+      if (selectedRoleRef.current === 'teacher' && loginIdRef.current === data.teacherId) {
+        // Show notification to teacher
+        alert(`✅ Student Verified!\n\n${data.studentName} has verified their attendance.\n\nVerified: ${data.verifiedCount}/${data.totalCount}`);
+
+        // Refresh student list to show updated status
+        fetchStudents();
+      }
+    });
+
+    // Listen for manual marking updates
+    socketRef.current.on('student_manually_marked', async (data) => {
+      console.log('📡 Student manually marked update:', data);
+      if (selectedRoleRef.current === 'teacher') {
+        // If it's the teacher who did it, they already know, but others need refresh
+        fetchStudents();
+        if (loginIdRef.current !== data.markedBy) {
+          alert(`👨‍🏫 Attendance Update!\n\n${data.studentName} was marked ${data.status} by ${data.markedByName}.`);
+        }
+      } else if (selectedRoleRef.current === 'student') {
+        if (studentIdRef.current === data.enrollmentNo) {
+          console.log(`⚠️ Student manually marked ${data.status} by teacher! Activating Shuttle Relay.`);
+          
+          // Sync with the server's manual mark state locally
+          OfflineTimerService.isManuallyMarked = (data.status === 'present');
+          OfflineTimerService.attendanceStatus = data.status;
+          await OfflineTimerService.saveState();
+
+          // Update local React state to reflect present/absent immediately
+          setOfflineTimerState(prev => ({
+            ...prev,
+            attendanceStatus: data.status
+          }));
+
+          if (data.status === 'present') {
+            Alert.alert(
+              '🏃 Shuttle Relay Active!',
+              `Your teacher manually marked you present! 🎓\n\nYour 75% attendance status is guaranteed, but you can continue running your timer to let your tracking catch up and potentially exceed it (76%, 80%, 100%)!`,
+              [{ text: 'Great!' }]
+            );
+          } else {
+            Alert.alert(
+              '👨‍🏫 Attendance Overridden',
+              `Your teacher manually marked you ${data.status} for this period. You can still run your timer to log your physical attendance.`,
+              [{ text: 'OK' }]
+            );
+          }
+        }
+      }
+    });
+
+    // Listen for Random Ring notifications (students only)
+    socketRef.current.on('random_ring_notification', (data) => {
+      console.log('🔔 Random ring received:', data);
+      console.log('   Current role:', selectedRoleRef.current);
+      console.log('   Current studentId:', studentIdRef.current);
+      console.log('   Notification for:', data.enrollmentNo);
+
+      if (selectedRoleRef.current === 'student' && studentIdRef.current === data.enrollmentNo) {
+        console.log('✅ Random Ring is for this student!');
+
+        // NEW CONDITION: Check if student has active class period and NOT in break/free period
+        const currentPeriod = offlinePeriodRef.current;
+        const hasActivePeriod = currentPeriod && !currentPeriod.isBreak && currentPeriod.subject;
+        
+        if (!hasActivePeriod) {
+          console.log('🚫 Ignoring random ring: No active class period, currently in break, or free period');
+          return;
+        }
+
+        const ringPauseTime = _appGetBootMs();
+        OfflineTimerService.pauseTimer('random_ring');
+        console.log('⏸️ Timer paused for random ring at', ringPauseTime);
+
+        const ringInfo = {
+          randomRingId: data.randomRingId,
+          teacherId: data.teacherId,
+          timestamp: data.timestamp,
+          expiresAt: data.expiresAt,
+          ringPauseTime,
+        };
+
+        setRandomRingData(ringInfo);
+
+        setTimeout(() => {
+          setRandomRingData(prev => {
+            if (prev && prev.randomRingId === data.randomRingId) {
+              console.log('⏰ Random ring verification timeout — resuming timer');
+              OfflineTimerService.resumeTimer('random_ring_timeout');
+              return null;
+            }
+            return prev;
+          });
+        }, 240000);
+
+        // Auto-open face verification camera immediately
+        console.log('📸 Auto-launching face verification for random ring...');
+        (async () => {
+          try {
+            const storedEmbedding = await SecureStorage.getFaceEmbedding();
+            if (!storedEmbedding || storedEmbedding.length !== 192) {
+              console.warn('❌ No face embedding — student must tap manually');
+              return;
+            }
+
+            const verificationResult = await FaceVerification.verifyFace(storedEmbedding);
+            console.log('🔍 Auto face verify result:', verificationResult);
+
+            if (!verificationResult.success || !verificationResult.isMatch) {
+              console.log('❌ Auto face verify failed — banner stays open for retry');
+              return;
+            }
+
+            const result = await processRandomRingVerification(ringInfo, 'verified');
+            if (result.success && result.mode !== 'server') {
+              console.log(`✅ Auto verify completed (${result.mode}) — timer resumed`);
+            } else if (result.success) {
+              console.log('✅ Auto verify accepted by server');
+            }
+          } catch (err) {
+            if (err.message === 'VERIFICATION_CANCELLED') {
+              console.log('📸 Auto face verify cancelled by student');
+            } else {
+              console.error('❌ Auto face verify error:', err.message);
+            }
+          }
+        })();
+      } else {
+        console.log('❌ Random Ring not for this student (role or ID mismatch)');
+      }
+    });
+
+    // Listen for teacher accept action
+    socketRef.current.on('random_ring_teacher_accepted', (data) => {
+      console.log('✅ Teacher accepted your presence:', data);
+      if (selectedRoleRef.current === 'student' && studentIdRef.current === data.enrollmentNo) {
+        setRandomRingData(prev => {
+          if (prev) {
+            const pausedSeconds = prev.ringPauseTime ? (_appGetBootMs() - prev.ringPauseTime) / 1000 : 0;
+            console.log(`▶️ Resuming timer after teacher accept, adding back ${pausedSeconds.toFixed(1)}s`);
+            OfflineTimerService.resumeTimer('random_ring_accepted', pausedSeconds);
+          }
+          return null;
+        });
+        alert('✅ Teacher verified your presence!');
+      }
+    });
+
+    // Listen for teacher reject action
+    socketRef.current.on('random_ring_teacher_rejected', (data) => {
+      console.log('❌ Teacher rejected your presence:', data);
+      if (selectedRoleRef.current === 'student' && studentIdRef.current === data.enrollmentNo) {
+        setRandomRingData(prev => ({
+          randomRingId: data.randomRingId,
+          teacherId: data.teacherId,
+          expiresAt: data.expiresAt,
+          isRejection: true,
+          ringPauseTime: prev?.ringPauseTime || _appGetBootMs(),
+        }));
+        alert('❌ Teacher rejected your presence.\n\nYou have 5 minutes to verify your face.');
+      }
+    });
+
+    // Listen for teacher action updates (for teacher dashboard)
+    socketRef.current.on('random_ring_teacher_action_update', (data) => {
+      if (selectedRoleRef.current === 'teacher') {
+        setActiveRandomRing(prev => {
+          if (!prev || prev._id !== data.randomRingId) return prev;
+          return {
+            ...prev,
+            selectedStudents: prev.selectedStudents.map(s => {
+              if (s.enrollmentNo !== data.enrollmentNo) return s;
+              // 'responded' means student tapped "I'm Here" — keep teacherAction as 'pending'
+              // so accept/reject buttons stay visible. Just mark responded flag.
+              if (data.action === 'responded') {
+                return { ...s, responded: true };
+              }
+              return { ...s, teacherAction: data.action };
+            })
+          };
+        });
+      }
+    });
+
+    // Listen for face verification success (students)
+    socketRef.current.on('random_ring_face_verification_success', (data) => {
+      console.log('✅ Face verification successful:', data);
+      if (selectedRoleRef.current === 'student' && studentIdRef.current === data.enrollmentNo) {
+        setRandomRingData(prev => {
+          if (prev) {
+            const pausedSeconds = prev.ringPauseTime ? (_appGetBootMs() - prev.ringPauseTime) / 1000 : 0;
+            console.log(`▶️ Resuming timer after face verify success, adding back ${pausedSeconds.toFixed(1)}s`);
+            OfflineTimerService.resumeTimer('random_ring_face_verified', pausedSeconds);
+          }
+          return null;
+        });
+        alert('✅ Face Verification Successful! Timer resumed.');
+      }
+    });
+
+    // Listen for face verification after rejection (for teacher dashboard)
+    socketRef.current.on('random_ring_face_verified_after_rejection', (data) => {
+      console.log('✅ Student verified face after rejection:', data);
+      if (selectedRoleRef.current === 'teacher') {
+        setActiveRandomRing(prev => {
+          if (!prev || prev._id !== data.randomRingId) return prev;
+          return {
+            ...prev,
+            selectedStudents: prev.selectedStudents.map(s =>
+              s.enrollmentNo === data.enrollmentNo
+                ? { ...s, faceVerifiedAfterRejection: true, verified: true }
+                : s
+            )
+          };
+        });
+
+        alert(`✅ ${data.studentName} verified face after rejection. Timer resumed.`);
+      }
+    });
+
+    // Live timer broadcast from server (targeted to class room)
+    socketRef.current.on('timer_broadcast', (data) => {
+      if (selectedRoleRef.current !== 'teacher') return;
+      setStudents(prevStudents => {
+        const updated = [...prevStudents];
+        // server always sends enrollmentNo — match on that only
+        const index = updated.findIndex(s => s.enrollmentNo === data.enrollmentNo);
+        if (index !== -1) {
+          const wasRunning = updated[index].isRunning;
+          updated[index] = {
+            ...updated[index],
+            timerValue: data.attendedSeconds,
+            isRunning: data.isRunning,
+            status: data.status,
+            attendanceSession: {
+              ...(updated[index].attendanceSession || {}),
+              isRunning: data.isRunning,
+              status: data.status,
+              attendedSeconds: data.attendedSeconds,
+            },
+          };
+          // When a student just went active, try to pre-warm P2P to them
+          if (!wasRunning && data.isRunning && data.enrollmentNo) {
+            const dc = teacherDataChannels.current[data.enrollmentNo];
+            if (!dc || dc.readyState !== 'open') {
+              // async — non-blocking
+              if (typeof checkTeacherWifi === 'function') {
+                checkTeacherWifi().then(onWifi => {
+                  if (onWifi && typeof teacherEstablishP2P === 'function') {
+                    teacherEstablishP2P(data.enrollmentNo, updated[index]?.name);
+                  }
+                });
+              }
+            }
+          }
+        }
+        return updated;
+      });
+    });
+
+    // Teacher receives WebRTC answer from student — complete ICE negotiation
+    socketRef.current.on('webrtc_answer', async (data) => {
+      if (selectedRoleRef.current !== 'teacher') return;
+      const enrollmentNo = data.studentId;
+      if (!enrollmentNo) return;
+      const pc = teacherRtcConnections.current[enrollmentNo];
+      if (pc) {
+        try {
+          console.log(`[P2P] Answer received from ${enrollmentNo}`);
+          await pc.setRemoteDescription(new RTCSessionDescription(data.answer));
+        } catch (err) {
+          console.warn('[P2P] setRemoteDescription failed:', err.message);
+        }
+      }
+    });
+
+    // Snapshot of all live students when teacher joins a class room
+    socketRef.current.on('live_state_snapshot', ({ students: liveStudents }) => {
+      if (selectedRoleRef.current !== 'teacher' || !liveStudents?.length) return;
+      setStudents(prevStudents => {
+        const updated = [...prevStudents];
+        liveStudents.forEach(live => {
+          // server always sends enrollmentNo — match on that only
+          const index = updated.findIndex(s => s.enrollmentNo === live.enrollmentNo);
+          if (index !== -1) {
+            updated[index] = {
+              ...updated[index],
+              timerValue: live.attendedSeconds,
+              isRunning: live.isRunning,
+              status: live.status,
+              attendanceSession: {
+                ...(updated[index].attendanceSession || {}),
+                isRunning: live.isRunning,
+                status: live.status,
+                attendedSeconds: live.attendedSeconds,
+              },
+            };
+          }
+        });
+        return updated;
+      });
+      // Pre-warm P2P connections to active students when teacher gets snapshot
+      // (runs async — won't block UI; only fires if teacher is on WiFi)
+      setTimeout(() => {
+        if (typeof teacherPreWarmP2P === 'function') {
+          teacherPreWarmP2P(liveStudents);
+        }
+      }, 500);
+    });
+
+    // Listen for BSSID schedule updates (students only)
+    socketRef.current.on('bssid-schedule-update', async (data) => {
+      console.log('📡 BSSID schedule update received:', data);
+
+      // Use ref so we always have the current studentId (avoids stale closure bug)
+      if (selectedRoleRef.current === 'student' && studentIdRef.current && data.enrollmentNo === studentIdRef.current) {
+        console.log(`   Reason: ${data.reason}`);
+        console.log(`   Date: ${data.date}`);
+        console.log(`   Periods: ${data.schedule.length}`);
+
+        // Update cached BSSID schedule
+        const saved = await BSSIDStorage.saveDailySchedule(data.schedule);
+
+        if (saved) {
+          console.log('✅ BSSID schedule updated in cache');
+
+          // Immediately refresh offlinePeriod state so banner updates without waiting 60s
+          const updatedPeriod = await BSSIDStorage.getCurrentPeriodBSSID();
+          setOfflinePeriod(updatedPeriod);
+
+          // Also update currentLecture in offlineTimerState if timer is running
+          if (updatedPeriod) {
+            setOfflineTimerState(prev => {
+              if (!prev.isRunning) return prev;
+              const updatedLecture = {
+                ...prev.currentLecture,
+                subject: updatedPeriod.subject || prev.currentLecture?.subject,
+                teacher: updatedPeriod.teacher || updatedPeriod.teacherName || prev.currentLecture?.teacher,
+                room: updatedPeriod.room || prev.currentLecture?.room,
+                startTime: updatedPeriod.startTime || prev.currentLecture?.startTime,
+                endTime: updatedPeriod.endTime || prev.currentLecture?.endTime,
+                period: updatedPeriod.period || prev.currentLecture?.period,
+              };
+              if (OfflineTimerService.isRunning) {
+                OfflineTimerService.currentLecture = updatedLecture;
+              }
+              return { ...prev, currentLecture: updatedLecture };
+            });
+          }
+
+          // Show notification to user
+          if (data.reason === 'classroom_bssid_updated') {
+            showToast(`📶 WiFi updated for ${data.affectedRoom}`, 'info');
+          } else if (data.reason === 'timetable_updated') {
+            console.log('📅 Timetable updated - BSSID schedule refreshed');
+          }
+        }
+      }
+    });
+
+    // Listen for timetable updates from server
+    socketRef.current.on('timetable-update', async (data) => {
+      console.log('📡 Timetable update received:', data);
+
+      if (selectedRoleRef.current === 'student' && semesterRef.current && branchRef.current) {
+        // Force refresh timetable with latest data
+        await fetchTimetable(semesterRef.current, branchRef.current);
+        showToast('📅 Timetable updated', 'success');
+      }
+    });
+  };
+
+  // Save lecture attendance when class ends
+  // Load today's attendance from server (called on login)
+  const loadTodayAttendance = async (studentIdValue) => {
+    // Data is already available from login response via userData — no extra fetch needed.
+    // attendanceSession is restored by OfflineTimerService on initialization.
+    console.log('📥 Attendance session will be restored by OfflineTimerService');
+  };
+
+  // Removed saveLectureAttendance - server handles all attendance tracking
+
+  // Calculate attendance statistics
+  const getAttendanceStats = () => {
+    const totalDays = attendanceHistory.length + (todayAttendance.lectures.length > 0 ? 1 : 0);
+    const presentDays = attendanceHistory.filter(d => d.dayPresent).length + (todayAttendance.dayPresent ? 1 : 0);
+
+    return {
+      totalDays,
+      presentDays,
+      attendancePercentage: totalDays > 0 ? Math.round((presentDays / totalDays) * 100) : 0
+    };
+  };
+
+  // Save attendance to server (period-specific for period changes)
+  const saveAttendanceToServer = async (timerValue, status, historicalPeriod) => {
+    if (!studentId) return;
+
+    if (status === undefined) {
+      status = 'attending';
+    }
+
+    try {
+      // Get current period info (prefer explicit historical period to avoid race conditions during transitions)
+      const currentPeriod = historicalPeriod || offlinePeriod || offlineTimerState.currentLecture;
+      if (!currentPeriod || !currentPeriod.period) {
+        console.log('⚠️ No period info available for saving attendance');
+        return;
+      }
+
+      // Get server date for validation
+      let clientDate;
+      try {
+        const serverTime = getServerTime();
+        clientDate = serverTime.nowDate().toISOString();
+      } catch {
+        clientDate = new Date(_appGetBootMs()).toISOString();
+      }
+
+      // Use the explicitly provided timerValue if defined, otherwise fallback to current singleton state
+      let currentTimerSeconds = timerValue;
+      if (currentTimerSeconds === undefined) {
+        try {
+          const timerState = OfflineTimerService.getState();
+          currentTimerSeconds = timerState.timerSeconds || 0;
+        } catch (error) {
+          console.log('Could not get timer state:', error);
+          currentTimerSeconds = 0;
+        }
+      }
+
+      console.log('📊 Saving period-specific attendance to server:');
+      console.log('   Period:', currentPeriod.period);
+      console.log('   Subject:', currentPeriod.subject);
+      console.log('   Timer seconds:', currentTimerSeconds);
+
+      // Use period-sync endpoint to save period-specific timer data (no check-in required)
+      const response = await fetch(POST_ATTENDANCE_PERIOD_SYNC, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          studentId: studentId,   // studentId === enrollmentNo always
+          timerSeconds: currentTimerSeconds,
+          period: currentPeriod.period,
+          subject: currentPeriod.subject,
+          teacher: currentPeriod.teacher || currentPeriod.teacherName,
+          room: currentPeriod.room,
+          semester,
+          branch,
+          timestamp: clientDate
+        })
+      });
+
+      const data = await response.json();
+      if (data.success) {
+        console.log('✅ Period attendance saved to server:', data);
+      } else {
+        console.log('⚠️ Failed to save period attendance:', data.error);
+      }
+    } catch (error) {
+      console.log('❌ Error saving period attendance to server:', error);
+    }
+  };
+
+  const loadConfig = async () => {
+    try {
+      // Load all data in parallel for better performance
+      const [savedTheme, cachedUserData, cachedLoginId, cachedConfig, dailyVerification] = await Promise.all([
+        AsyncStorage.getItem(THEME_KEY),
+        AsyncStorage.getItem(USER_DATA_KEY),
+        AsyncStorage.getItem(LOGIN_ID_KEY),
+        AsyncStorage.getItem(CACHE_KEY),
+        AsyncStorage.getItem(DAILY_VERIFICATION_KEY)
+      ]);
+
+      // Force theme to 'warm' (light) - ignore saved preference
+      setThemeMode('warm');
+      await AsyncStorage.setItem(THEME_KEY, 'warm');
+
+      // Check for saved login data
+      if (cachedUserData && cachedLoginId) {
+        try {
+          const userData = normalizeStudentUserData(JSON.parse(cachedUserData));
+          console.log('📱 Restoring cached session for:', userData.role, userData.enrollmentNo || userData.email);
+          setUserData(userData);
+          setLoginId(cachedLoginId);
+          setSelectedRole(userData.role);
+          setShowLogin(false);
+          console.log('📱 showLogin set to false, selectedRole:', userData.role);
+
+          if (userData.role === 'student') {
+            setStudentName(userData.name);
+            // studentId is always enrollmentNo — never fall back to _id
+            setStudentId(userData.enrollmentNo);
+            setSemester(userData.semester);
+            setBranch(userData.branch);
+            // Join class socket room so student receives random ring notifications
+            joinClassRoom(userData.semester?.toString(), userData.branch);
+
+            // Validate enrollment in background — don't block UI restore
+            const enrollmentNo = userData.enrollmentNo;
+            if (enrollmentNo) {
+              fetch(`${GET_STUDENT_VALIDATE}?enrollmentNo=${encodeURIComponent(enrollmentNo)}`)
+                .then(r => r.json())
+                .then(validateData => {
+                  if (validateData.valid === false) {
+                    console.log('🚫 Enrollment invalid — clearing session');
+                    AsyncStorage.multiRemove([USER_DATA_KEY, LOGIN_ID_KEY, ROLE_KEY, STUDENT_NAME_KEY, STUDENT_ID_KEY, DAILY_VERIFICATION_KEY]);
+                    setUserData(null);
+                    setLoginId(null);
+                    setSelectedRole(null);
+                    setShowLogin(true);
+                    Alert.alert('Enrollment Invalid', 'Your enrollment is no longer valid. Please contact administration.', [{ text: 'OK' }]);
+                  }
+                })
+                .catch(() => console.log('⚠️ Enrollment validation skipped (network error)'));
+            }
+
+            if (userData.semester) {
+              AsyncStorage.setItem(SEMESTER_KEY, userData.semester).catch(() => { });
+            }
+            if (userData.branch) {
+              AsyncStorage.setItem(BRANCH_KEY, userData.branch).catch(() => { });
+            }
+
+            // Immediately load offline BSSID schedule from cache on app restore.
+            // This runs BEFORE the 15s fetchOfflinePeriod poll fires, so the
+            // timer card and START TIMER button appear instantly even with no internet.
+            if (enrollmentNo) {
+              // Priority 1: Check if we have valid schedule in cache/redundancy
+              BSSIDStorage.needsRefresh()
+                .then(async (needsRefresh) => {
+                  if (!needsRefresh) {
+                    console.log('🛡️ BSSID schedule is valid (restored or cached) — skipping startup fetch');
+                    const period = await BSSIDStorage.getCurrentPeriodBSSID();
+                    if (period) {
+                      console.log('📦 Restored offline period:', period.subject);
+                      setOfflinePeriod(period);
+                    }
+                  } else {
+                    // No valid schedule for today — fetch in background
+                    console.log('🔄 No valid BSSID schedule — triggering startup fetch');
+                    fetchDailyBSSIDSchedule(enrollmentNo, false).catch(() => {});
+                  }
+                })
+                .catch(() => {
+                  // Fallback: try to fetch if anything fails
+                  fetchDailyBSSIDSchedule(enrollmentNo, false).catch(() => {});
+                });
+            }
+
+            // Check if face verification is still valid for today
+            if (dailyVerification) {
+              try {
+                const verificationData = JSON.parse(dailyVerification);
+                const serverTime = getServerTime();
+                const today = new Date(serverTime.now()).toDateString();
+
+                // Face verification removed - auto-start timer if session exists
+                if (verificationData.date === today &&
+                  verificationData.verified &&
+                  verificationData.studentId === userData.enrollmentNo) {
+                  console.log('✅ Restoring session from today');
+                  // Face verification removed - no longer needed
+
+                  // Auto-start timer
+                  setTimeout(() => {
+                    // Timer removed - period-based attendance
+                    console.log('▶️ Timer auto-started from saved session');
+                  }, 1000);
+                } else {
+                  // Session expired or different student
+                  console.log('🔄 Session expired or different student');
+                  await AsyncStorage.removeItem(DAILY_VERIFICATION_KEY);
+                }
+              } catch (parseError) {
+                console.log('Error parsing session data:', parseError);
+                await AsyncStorage.removeItem(DAILY_VERIFICATION_KEY);
+              }
+            }
+          } else if (userData.role === 'teacher') {
+            // For teachers: fetch students and set up timetable from stored preferences
+            // Check if teacher has stored semester/branch preferences
+            const storedSemester = await AsyncStorage.getItem(SEMESTER_KEY);
+            const storedBranch = await AsyncStorage.getItem(BRANCH_KEY);
+            const storedRoom = await AsyncStorage.getItem('@assigned_room');
+            const storedPeriodStr = await AsyncStorage.getItem('@assigned_period');
+            const storedManualSet = await AsyncStorage.getItem('@is_period_manually_set');
+            
+            if (storedSemester) {
+              console.log('📚 Restoring teacher preferences:', storedSemester, storedBranch || 'No Branch');
+              setSemester(storedSemester);
+              setBranch(storedBranch);
+              setManualSelection({ semester: storedSemester, branch: storedBranch });
+              
+              const storedPeriod = storedPeriodStr ? parseInt(storedPeriodStr) : null;
+              if (storedRoom && storedPeriod) {
+                setAssignedRoom(storedRoom);
+                setAssignedPeriod(storedPeriod);
+                setIsPeriodManuallySet(storedManualSet === 'true');
+                setCurrentClassInfo({
+                  subject: `Manual Selection (${storedRoom}, Period ${storedPeriod})`,
+                  branch: storedBranch,
+                  semester: storedSemester,
+                  isManual: true
+                });
+              } else {
+                setCurrentClassInfo({
+                  subject: storedBranch ? 'Manual Selection (Assign Classroom)' : 'Select Branch',
+                  branch: storedBranch,
+                  semester: storedSemester,
+                  isManual: true
+                });
+              }
+            }
+            
+            fetchStudents();
+          }
+        } catch (parseError) {
+          console.log('Error parsing cached user data:', parseError);
+          // Clear corrupted data
+          await AsyncStorage.multiRemove([USER_DATA_KEY, LOGIN_ID_KEY]);
+          setShowLogin(true);
+        }
+      } else {
+        // No cached session — show login screen
+        setShowLogin(true);
+      }
+
+      // Load cached config
+      if (cachedConfig) {
+        try {
+          setConfig(JSON.parse(cachedConfig));
+        } catch (parseError) {
+          console.log('Error parsing cached config:', parseError);
+        }
+      }
+
+      // Fetch fresh config from server
+      fetchConfig();
+    } catch (error) {
+      console.log('Error loading cache:', error);
+    } finally {
+      setIsInitializing(false);
+    }
+  };
+
+  const toggleTheme = () => setShowThemePicker(true);
+
+  const selectTheme = async (mode) => {
+    setThemeMode(mode);
+    setShowThemePicker(false);
+    AsyncStorage.setItem(THEME_KEY, mode).catch(() => { });
+  };
+
+  const fetchConfig = async () => {
+    try {
+      const response = await fetch(API_URL);
+      const data = await response.json();
+      await AsyncStorage.setItem(CACHE_KEY, JSON.stringify(data));
+      setConfig(data);
+      // Timer duration from config is no longer used - attendance based on actual lecture time
+
+      // Fetch dynamic app configuration (branches, semesters, etc.)
+      try {
+        const appConfigResponse = await fetch(GET_CONFIG_APP);
+        const appConfigData = await appConfigResponse.json();
+        if (appConfigData.success) {
+          console.log('✅ Loaded dynamic app config:', appConfigData.config);
+          // Store for later use (branches, semesters, etc.)
+          await AsyncStorage.setItem('@app_config', JSON.stringify(appConfigData.config));
+        }
+      } catch (configError) {
+        console.log('Could not load dynamic config:', configError);
+      }
+    } catch (error) {
+      console.log('Using cached config');
+    }
+  };
+
+  const joinClassRoom = (sem, br) => {
+    if (!socketRef.current || !sem || !br) return;
+    // Leave old room first
+    if (currentClassRoomRef.current) {
+      const { semester: oldSem, branch: oldBr } = currentClassRoomRef.current;
+      if (oldSem !== sem || oldBr !== br) {
+        socketRef.current.emit('leave_class_room', { semester: oldSem, branch: oldBr });
+      }
+    }
+    socketRef.current.emit('join_class_room', { semester: sem, branch: br });
+    currentClassRoomRef.current = { semester: sem, branch: br };
+  };
+
+  const fetchStudents = async (overrideSelection) => {
+    const STUDENTS_CACHE_KEY = '@teacher_students_cache';
+    try {
+      // Use override (e.g. from filter dialog) or current ref value to avoid stale closures in background tasks
+      const effectiveSelection = overrideSelection ?? manualSelectionRef.current;
+
+      // When teacher has chosen a filter (branch + semester), use it first so list reflects their selection
+      if (selectedRole === 'teacher' && effectiveSelection.semester && effectiveSelection.semester !== 'auto') {
+        if (effectiveSelection.branch) {
+          const manualResponse = await fetch(`${GET_VIEW_RECORDS_STUDENTS}?semester=${encodeURIComponent(effectiveSelection.semester)}&branch=${encodeURIComponent(effectiveSelection.branch)}`);
+          const manualData = await manualResponse.json();
+          if (manualData.success) {
+            console.log(`✅ Filter: ${manualData.students?.length || 0} students for ${effectiveSelection.branch} Sem ${effectiveSelection.semester}`);
+            const sList = manualData.students || [];
+            setStudents(sList);
+            // Cache for offline use
+            AsyncStorage.setItem(STUDENTS_CACHE_KEY, JSON.stringify(sList)).catch(() => {});
+            joinClassRoom(effectiveSelection.semester, effectiveSelection.branch);
+            setCurrentClassInfo({
+              subject: 'Manual Selection',
+              branch: effectiveSelection.branch,
+              semester: effectiveSelection.semester,
+              isManual: true
+            });
+            return;
+          }
+        } else {
+          // Semester selected but no branch yet - show partial selection state and STOP
+          // This prevents the auto-class logic from overriding the user's manual semester choice
+          setStudents([]);
+          setCurrentClassInfo({
+            subject: 'Select Branch',
+            branch: null,
+            semester: effectiveSelection.semester,
+            isManual: true
+          });
+          return;
+        }
+      }
+
+      // For teachers, otherwise use current class from timetable
+      if (selectedRole === 'teacher' && loginId) {
+        console.log(`🔍 Fetching students for teacher: ${loginId}`);
+        const response = await fetch(GET_TEACHER_CURRENT_CLASS_STUDENTS(loginId));
+        const data = await response.json();
+
+        if (data.success) {
+          if (data.hasActiveClass) {
+            console.log(`✅ Found ${data.students?.length || 0} students in current class`);
+            console.log(`📚 Current class: ${data.currentClass?.subject} - ${data.currentClass?.branch} Sem ${data.currentClass?.semester}`);
+            const sList = data.students || [];
+            setStudents(sList);
+            // Cache for offline use
+            AsyncStorage.setItem(STUDENTS_CACHE_KEY, JSON.stringify(sList)).catch(() => {});
+            joinClassRoom(data.currentClass?.semester?.toString(), data.currentClass?.branch);
+            setCurrentClassInfo(data.currentClass);
+
+            // Update semester and branch to match current class (for other components)
+            setSemester(data.currentClass.semester.toString());
+            setBranch(data.currentClass.branch);
+            return;
+          }
+
+          console.log('ℹ️  No active class right now');
+        }
+
+        // No active class and no manual selection
+        setStudents([]);
+        setCurrentClassInfo(null);
+        return;
+      }
+
+      if (selectedRole === 'teacher' && !loginId && semester && branch) {
+        // Fallback: only if loginId not available AND semester/branch are explicitly set
+        console.log(`📊 Fetching students for ${branch} Semester ${semester} (fallback - no loginId)`);
+        const response = await fetch(`${GET_VIEW_RECORDS_STUDENTS}?semester=${encodeURIComponent(semester)}&branch=${encodeURIComponent(branch)}`);
+        const data = await response.json();
+        if (data.success) {
+          const sList = data.students || [];
+          setStudents(sList);
+          AsyncStorage.setItem(STUDENTS_CACHE_KEY, JSON.stringify(sList)).catch(() => {});
+        }
+      }
+    } catch (error) {
+      console.log('Error fetching students:', error);
+      if (selectedRole === 'teacher') {
+        // ── Offline fallback: restore last cached student list ────────────
+        try {
+          const cached = await AsyncStorage.getItem(STUDENTS_CACHE_KEY);
+          if (cached) {
+            const cachedStudents = JSON.parse(cached);
+            if (cachedStudents.length > 0) {
+              console.log(`📦 Offline: restored ${cachedStudents.length} students from cache`);
+              setStudents(cachedStudents);
+              showToast('📦 Offline — showing last known student list', 'warning');
+              return;
+            }
+          }
+        } catch (_) {}
+        showToast('⚠️ Could not load students. Check your connection.', 'error');
+      }
+    }
+  };
+
+  // Fetch single student and add to list (for instant updates)
+  const fetchStudentForList = async (studentId) => {
+    try {
+      console.log('🔍 Fetching student details for instant add:', studentId);
+      const response = await fetch(`${GET_STUDENT_MANAGEMENT}?enrollmentNo=${encodeURIComponent(studentId)}`);
+      const data = await response.json();
+      if (data.success && data.student) {
+        setStudents(prev => {
+          // Check if student already exists
+          const exists = prev.some(s =>
+            s._id === data.student._id ||
+            s.enrollmentNo === data.student.enrollmentNo ||
+            s.enrollmentNo === studentId
+          );
+          if (!exists) {
+            console.log('✅ Instantly added student to list:', data.student.name);
+            return [...prev, data.student];
+          }
+          return prev;
+        });
+      }
+    } catch (error) {
+      console.log('Error fetching student for list:', error);
+      // Fallback: refresh entire list
+      fetchStudents();
+    }
+  };
+
+  const fetchStudentDetails = async (student) => {
+    setSelectedStudent(student);
+    setLoadingDetails(true);
+
+    try {
+      // Fetch student management details
+      const detailsResponse = await fetch(`${GET_STUDENT_MANAGEMENT}?enrollmentNo=${encodeURIComponent(student.enrollmentNo)}`);
+      const detailsData = await detailsResponse.json();
+
+      // Fetch attendance records (last 30 days) - use server time
+      let thirtyDaysAgo;
+      try {
+        const serverTime = getServerTime();
+        thirtyDaysAgo = new Date(serverTime.now());
+        thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+      } catch {
+        thirtyDaysAgo = new Date();
+        thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+      }
+      const recordsResponse = await fetch(`${GET_ATTENDANCE_RECORDS}?studentId=${encodeURIComponent(student.enrollmentNo)}&startDate=${thirtyDaysAgo.toISOString()}`);
+      const recordsData = await recordsResponse.json();
+
+      // Fetch attendance statistics
+      const statsResponse = await fetch(`${GET_ATTENDANCE_STATS}?studentId=${encodeURIComponent(student.enrollmentNo)}`);
+      const statsData = await statsResponse.json();
+
+      if (detailsData.success) {
+        setStudentDetails(detailsData.student);
+      }
+      if (recordsData.success) {
+        setAttendanceRecords(recordsData.records);
+      }
+      if (statsData.success) {
+        setAttendanceStats(statsData.stats);
+      }
+    } catch (error) {
+      console.log('Error fetching student details:', error);
+    } finally {
+      setLoadingDetails(false);
+    }
+  };
+
+  const closeStudentDetails = () => {
+    setSelectedStudent(null);
+    setStudentDetails(null);
+    setAttendanceRecords([]);
+    setAttendanceStats(null);
+  };
+
+  // Convert timetable format for CircularTimer (supports dynamic days)
+  const convertTimetableFormat = (timetable) => {
+    if (!timetable || !timetable.timetable) return null;
+
+    const schedule = {};
+    // Get days dynamically from timetable in proper week order
+    const dayOrder = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
+    const dayKeys = Object.keys(timetable.timetable).sort((a, b) =>
+      dayOrder.indexOf(a.toLowerCase()) - dayOrder.indexOf(b.toLowerCase())
+    );
+
+dayKeys.forEach((dayKey) => {
+      const dayName = dayKey.charAt(0).toUpperCase() + dayKey.slice(1);
+      console.log(`🔍 Processing day: ${dayKey} → ${dayName}`);
+      if (timetable.timetable[dayKey]) {
+        schedule[dayName] = timetable.timetable[dayKey].map((period, idx) => {
+          // Get period info from the periods array
+          const periodInfo = timetable.periods && timetable.periods[idx];
+          
+          // Construct time: prefer periods array, fallback to period object, then calculate default 45-min periods from 08:00
+          let periodTime = '';
+          if (periodInfo && periodInfo.startTime && periodInfo.endTime) {
+            periodTime = `${periodInfo.startTime}-${periodInfo.endTime}`;
+          } else if (period.startTime && period.endTime) {
+            periodTime = `${period.startTime}-${period.endTime}`;
+          } else {
+            // Generate default 45-min period times starting from 08:00
+            const startHour = 8 + Math.floor((idx * 45) / 60);
+            const startMinute = (idx * 45) % 60;
+            const endHour = 8 + Math.floor(((idx + 1) * 45) / 60);
+            const endMinute = ((idx + 1) * 45) % 60;
+            periodTime = `${String(startHour).padStart(2, '0')}:${String(startMinute).padStart(2, '0')}-${String(endHour).padStart(2, '0')}:${String(endMinute).padStart(2, '0')}`;
+          }
+          
+          return {
+            period: period.period || (idx + 1),
+            subject: period.subject || '',
+            teacher: period.teacher || period.teacherName || '',
+            teacherName: period.teacherName || period.teacher || '',
+            room: period.room || '',
+            time: periodTime,
+            isBreak: period.isBreak
+          };
+        });
+        console.log(`✅ ${dayName} schedule created with ${schedule[dayName].length} periods`);
+      }
+    });
+
+    console.log('Converted timetable schedule (dynamic days):', schedule);
+    console.log('Schedule keys:', Object.keys(schedule));
+
+    const result = { ...timetable, schedule };
+    console.log('🎯 Returning timetable with schedule:', {
+      hasSchedule: !!result.schedule,
+      scheduleKeys: Object.keys(result.schedule),
+      sundayExists: 'Sunday' in result.schedule,
+      sundayLength: result.schedule.Sunday?.length
+    });
+
+    return result;
+  };
+
+  const fetchTimetable = async (sem, br) => {
+    try {
+      console.log('🔄 Fetching timetable for:', sem, br);
+      const branchParam = encodeURIComponent(br);
+      const response = await fetch(GET_TIMETABLE_BY_SEMESTER_BRANCH(sem, branchParam));
+      console.log('✅ Response status:', response.status);
+      const data = await response.json();
+
+      const rawDays = data.timetable?.timetable ? Object.keys(data.timetable.timetable) : [];
+      console.log('📥 RAW days from server:', rawDays.join(', '));
+      console.log('🔍 Sunday in raw data?', rawDays.includes('sunday') ? 'YES ✅' : 'NO ❌');
+
+      if (data.success) {
+        const convertedTimetable = convertTimetableFormat(data.timetable);
+        const convertedDays = convertedTimetable?.schedule ? Object.keys(convertedTimetable.schedule) : [];
+        console.log('📤 Converted schedule days:', convertedDays.join(', '));
+        console.log('🔍 Sunday in converted?', convertedDays.includes('Sunday') ? 'YES ✅' : 'NO ❌');
+
+        // Validate that all 7 days are present
+        const expectedDays = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+        const missingDays = expectedDays.filter(day => !convertedDays.includes(day));
+        if (missingDays.length > 0) {
+          console.warn('⚠️ WARNING: Timetable is missing days:', missingDays.join(', '));
+          console.warn('  This might be an old timetable. Consider clearing app data.');
+        }
+
+        setTimetable(convertedTimetable);
+        console.log('✅ Timetable set successfully');
+      }
+    } catch (error) {
+      console.log('❌ Error fetching timetable:', error);
+    }
+  };
+
+  // Fetch and cache daily BSSID schedule
+  const fetchDailyBSSIDSchedule = async (enrollmentNo, forceRefresh = false) => {
+    try {
+      // Check if refresh needed (skip check if force refresh)
+      if (!forceRefresh) {
+        const needsRefresh = await BSSIDStorage.needsRefresh();
+
+        if (!needsRefresh) {
+          console.log('✅ Using cached BSSID schedule');
+          // Still trigger offlinePeriod refresh so UI shows current period immediately
+          const currentPeriod = await BSSIDStorage.getCurrentPeriodBSSID();
+          if (currentPeriod) setOfflinePeriod(currentPeriod);
+          return;
+        }
+      }
+
+      console.log('🔄 Fetching fresh BSSID schedule...');
+
+      const response = await fetch(
+        `${GET_DAILY_BSSID_SCHEDULE}?enrollmentNo=${encodeURIComponent(enrollmentNo)}`
+      );
+
+      const data = await response.json();
+
+      if (data.success && data.schedule) {
+        await BSSIDStorage.saveDailySchedule(data.schedule);
+        console.log(`✅ Cached ${data.schedule.length} periods for ${data.dayName}`);
+
+        // Immediately refresh offlinePeriod so UI updates without waiting for the 15s poll
+        const currentPeriod = await BSSIDStorage.getCurrentPeriodBSSID();
+        if (currentPeriod) setOfflinePeriod(currentPeriod);
+
+        // Also refresh face embedding cache whenever the offline schedule is updated.
+        (async () => {
+          try {
+            const faceResponse = await fetch(
+              `${SOCKET_URL}/api/students/${enrollmentNo}/face-data`,
+              { method: 'GET', headers: { 'Content-Type': 'application/json' } }
+            );
+            if (faceResponse.ok) {
+              const faceData = await faceResponse.json();
+              if (faceData.success && Array.isArray(faceData.faceEmbedding) && faceData.faceEmbedding.length > 0) {
+                const enrolledAt = faceData.enrolledAt || new Date().toISOString();
+                await SecureStorage.saveCachedServerEmbedding(faceData.faceEmbedding, enrolledAt);
+                console.log('✅ Face embedding refreshed alongside BSSID schedule update');
+              }
+            }
+          } catch (_) {
+            // Silently ignore — BSSID schedule save already succeeded
+          }
+        })();
+      } else {
+        console.log('⚠️ No BSSID schedule available from server:', data.message);
+        // Fall back to existing cached schedule so offline mode still works
+        const currentPeriod = await BSSIDStorage.getCurrentPeriodBSSID();
+        if (currentPeriod) {
+          console.log('📦 Using existing cached schedule for offline mode');
+          setOfflinePeriod(currentPeriod);
+        }
+      }
+    } catch (error) {
+      console.error('❌ Error fetching BSSID schedule (network error):', error.message);
+      // Network is down — use whatever is already cached on device
+      try {
+        const currentPeriod = await BSSIDStorage.getCurrentPeriodBSSID();
+        if (currentPeriod) {
+          console.log('📦 Offline: using cached BSSID schedule for current period');
+          setOfflinePeriod(currentPeriod);
+        } else {
+          console.log('⚠️ No cached BSSID schedule available offline');
+        }
+      } catch (cacheError) {
+        console.error('❌ Failed to read cached schedule:', cacheError.message);
+      }
+    }
+  };
+
+  // Auto-refresh timetable every 60 seconds to get period updates
+  useEffect(() => {
+    if (selectedRole === 'student' && semester && branch && !showLogin) {
+      const refreshInterval = setInterval(() => {
+        fetchTimetable(semester, branch);
+      }, 30 * 1000); // Refresh every 30 seconds for faster updates
+
+      return () => clearInterval(refreshInterval);
+    }
+  }, [selectedRole, semester, branch, showLogin]);
+
+  // Periodically rejoin class room to survive server restarts and silent socket drops
+  useEffect(() => {
+    if (selectedRole === 'student' && semester && branch && !showLogin) {
+      const rejoinInterval = setInterval(() => {
+        if (socketRef.current && socketRef.current.connected) {
+          console.log('🔄 Periodic class room rejoin (keep-alive)...');
+          joinClassRoom(semester?.toString(), branch);
+        }
+      }, 60000); // Every 60 seconds
+
+      return () => clearInterval(rejoinInterval);
+    }
+  }, [selectedRole, semester, branch, showLogin]);
+
+  const saveTimetable = async (updatedTimetable) => {
+    try {
+      const response = await fetch(POST_TIMETABLE, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(updatedTimetable)
+      });
+      const data = await response.json();
+      if (data.success) {
+        setTimetable(data.timetable);
+        alert('Timetable saved successfully!');
+      }
+    } catch (error) {
+      console.log('Error saving timetable:', error);
+      alert('Failed to save timetable');
+    }
+  };
+
+  const handleRoleSelect = async (role) => {
+    try {
+      await AsyncStorage.setItem(ROLE_KEY, role);
+      setSelectedRole(role);
+      if (role === 'student') {
+        setShowNameInput(true);
+      } else if (role === 'teacher') {
+        fetchStudents();
+      }
+    } catch (error) {
+      console.log('Error saving role:', error);
+    }
+  };
+
+  const handleNameSubmit = async () => {
+    // Old anonymous name-only registration flow — replaced by full login.
+    // Redirect to login screen instead of calling the old /api/student/register.
+    if (!studentName.trim()) return;
+    console.log('ℹ️ handleNameSubmit: old flow — redirecting to login screen');
+    setShowNameInput(false);
+    setShowLogin(true);
+  };
+
+  // Timer runs continuously when started - no countdown logic needed
+  // Attendance is tracked per lecture based on actual class time
+  useEffect(() => {
+    return () => clearInterval(intervalRef.current);
+  }, [isRunning]);
+
+  useEffect(() => {
+    if (isRunning) {
+      const anim = Animated.loop(
+        Animated.sequence([
+          Animated.timing(pulseAnim, {
+            toValue: 1.05,
+            duration: 500,
+            useNativeDriver: false,
+          }),
+          Animated.timing(pulseAnim, {
+            toValue: 1,
+            duration: 500,
+            useNativeDriver: false,
+          }),
+        ])
+      );
+      anim.start();
+      return () => anim.stop();
+    } else {
+      pulseAnim.stopAnimation();
+      pulseAnim.setValue(1);
+    }
+  }, [isRunning]);
+
+  const updateTimerOnServer = async (timer, running, status = null) => {
+    // Legacy function - kept for compatibility but server handles all tracking
+    if (!studentId) {
+      console.log('⚠️ No studentId for timer update');
+      return;
+    }
+
+    let finalStatus = status;
+    if (!finalStatus) {
+      if (running) finalStatus = 'attending';
+      else finalStatus = 'absent';
+    }
+
+    // ── LAN first (works offline), then WebRTC, then socket ───────────────
+    LanP2PService.sendTimerStateChange(timer, running, finalStatus);
+
+    if (socketRef.current?.rtcDC && socketRef.current.rtcDC.readyState === 'open') {
+      try {
+        socketRef.current.rtcDC.send(JSON.stringify({
+          type: 'TIMER_UPDATE',
+          studentId,
+          timerValue: timer,
+          isRunning: running,
+          status: finalStatus
+        }));
+      } catch (err) {
+        console.warn('[P2P] Failed to send timer update over DataChannel:', err.message);
+      }
+    }
+
+    // ── Socket emit (requires internet — server fallback) ──────────────────
+    if (!socketRef.current || !socketRef.current.connected) {
+      console.log('⚠️ Socket not connected — LAN P2P mode');
+      if (!socketRef.current?.connected) setupSocket();
+      return;
+    }
+
+    console.log('📡 Sending timer update:', { studentId, timer, running, status: finalStatus });
+
+    socketRef.current.emit('timer_update', {
+      studentId,
+      studentName: studentName,
+      timerValue: timer,
+      isRunning: running,
+      status: finalStatus,
+      semester,
+      branch,
+      via: 'socket',
+    });
+
+    // Save attendance record when timer completes or student marks present/absent
+    if (finalStatus === 'present' || finalStatus === 'absent') {
+      try {
+        // Get server date for validation
+        let clientDate;
+        try {
+          const serverTime = getServerTime();
+          clientDate = serverTime.nowDate().toISOString();
+        } catch {
+          clientDate = new Date(_appGetBootMs()).toISOString();
+        }
+
+        // POST_ATTENDANCE_RECORD now routes to /api/attendance/period-sync
+        await fetch(POST_ATTENDANCE_RECORD, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            studentId,
+            timerSeconds: timer,
+            period: offlineTimerState?.currentLecture?.period || 'P1',
+            subject: offlineTimerState?.currentLecture?.subject || '',
+            teacher: offlineTimerState?.currentLecture?.teacher || '',
+            room: offlineTimerState?.currentLecture?.room || '',
+            semester,
+            branch,
+            timestamp: clientDate
+          })
+        });
+      } catch (error) {
+        console.log('Error saving attendance record:', error);
+      }
+    }
+  };
+
+  // WiFi validation function - SAFE IMPLEMENTATION WITH DEBUG INFO
+  // Check if connected to the authorized classroom WiFi
+  const isConnectedToClassroomWiFi = async (suppressAlerts = false) => {
+    try {
+      console.log('📶 Starting WiFi validation...');
+
+      // Check for simulated bypass (for testing)
+      if (wifiDebugInfo.status === 'AUTHORIZED (SIMULATED)') {
+        console.log('🧪 Using simulated WiFi validation for testing');
+        return true;
+      }
+
+      // DEVELOPMENT MODE: Always allow bypass for testing
+      if (__DEV__) {
+        console.warn('⚠️ Development mode: Bypassing WiFi validation for testing');
+        setWifiDebugInfo({
+          status: 'AUTHORIZED (DEV MODE)',
+          currentBSSID: 'Development bypass',
+          expectedBSSID: 'Not required in dev',
+          room: currentClassInfo?.room || 'Dev room',
+          lastChecked: new Date().toLocaleTimeString()
+        });
+        return true;
+      }
+
+      // Check if we have current class info
+      if (!currentClassInfo || !currentClassInfo.room) {
+        console.log('❌ No classroom info available for WiFi check');
+        setWifiDebugInfo({
+          status: 'No classroom info',
+          currentBSSID: 'N/A',
+          expectedBSSID: 'N/A',
+          room: 'N/A',
+          lastChecked: new Date().toLocaleTimeString()
+        });
+
+        // In production, show user-friendly message only if requested
+        if (!suppressAlerts) {
+          alert('⚠️ No Active Class\n\nNo classroom information available for WiFi validation.\n\nPlease ensure you have an active class scheduled.');
+        }
+        return false;
+      }
+
+      // Check if WiFiManager is available
+      if (!WiFiManager) {
+        console.error('❌ WiFiManager not available');
+
+        setWifiDebugInfo({
+          status: 'WiFiManager not available',
+          currentBSSID: 'N/A',
+          expectedBSSID: 'N/A',
+          room: currentClassInfo.room
+        });
+
+        // Show user-friendly error
+        if (!suppressAlerts) {
+          alert('⚠️ WiFi System Error\n\nWiFi validation system is not available.\n\nPlease restart the app and try again.');
+        }
+        return false;
+      }
+
+      console.log('✅ WiFiManager available');
+
+      // Initialize WiFi manager with error handling
+      try {
+        const initResult = await WiFiManager.initialize();
+        console.log('✅ WiFiManager initialized:', initResult);
+      } catch (initError) {
+        console.error('❌ WiFiManager initialization failed:', initError);
+        setWifiDebugInfo({
+          status: 'INIT ERROR',
+          currentBSSID: 'Initialization failed',
+          expectedBSSID: 'N/A',
+          room: currentClassInfo.room,
+          lastChecked: new Date().toLocaleTimeString(),
+          reason: initError.message
+        });
+        return false;
+      }
+
+      // Load authorized BSSIDs for current student
+      try {
+        console.log('📥 Loading authorized BSSIDs with params:', {
+          serverUrl: SOCKET_URL,
+          semester,
+          course: branch,
+          enrollmentNo: studentId,
+          room: currentClassInfo.room
+        });
+
+        await WiFiManager.loadAuthorizedBSSIDs(SOCKET_URL, {
+          semester,
+          course: branch,
+          enrollmentNo: studentId
+        });
+        console.log('✅ Authorized BSSIDs loaded');
+
+        // Debug: Show what BSSIDs were loaded
+        const wifiStatus = WiFiManager.getStatus();
+        console.log(`📋 Loaded ${wifiStatus.authorizedBSSIDsCount} authorized BSSIDs`);
+
+      } catch (loadError) {
+        console.error('❌ Failed to load authorized BSSIDs:', loadError);
+        setWifiDebugInfo({
+          status: 'CONFIG ERROR',
+          currentBSSID: 'N/A',
+          expectedBSSID: 'Failed to load from server',
+          room: currentClassInfo.room,
+          lastChecked: new Date().toLocaleTimeString(),
+          reason: loadError.message
+        });
+        return false;
+      }
+
+      // Check if current BSSID is authorized for this room
+      let authResult;
+      try {
+        console.log(`🔍 Checking authorization for room: ${currentClassInfo.room}`);
+        authResult = await WiFiManager.isAuthorizedForRoom(currentClassInfo.room);
+
+        console.log('📶 === WiFi Authorization Result ===');
+        console.log('   Authorized:', authResult.authorized);
+        console.log('   Current BSSID:', authResult.currentBSSID);
+        console.log('   Expected BSSID:', authResult.expectedBSSID);
+        console.log('   Reason:', authResult.reason);
+        console.log('   Room Info:', authResult.roomInfo);
+        console.log('================================');
+
+        // Update debug info with actual values
+        setWifiDebugInfo({
+          status: authResult.authorized ? 'AUTHORIZED' : 'NOT AUTHORIZED',
+          currentBSSID: authResult.currentBSSID || 'Not detected',
+          expectedBSSID: authResult.expectedBSSID || 'Not configured',
+          room: currentClassInfo.room,
+          lastChecked: new Date().toLocaleTimeString(),
+          reason: authResult.reason || 'unknown'
+        });
+
+      } catch (authError) {
+        console.error('❌ WiFi authorization check failed:', authError);
+        setWifiDebugInfo({
+          status: 'ERROR',
+          currentBSSID: 'Error getting BSSID',
+          expectedBSSID: 'Error loading config',
+          room: currentClassInfo.room,
+          lastChecked: new Date().toLocaleTimeString(),
+          reason: authError.message
+        });
+        return false;
+      }
+
+      if (!authResult || !authResult.authorized) {
+        console.log(`❌ WiFi validation FAILED: ${authResult?.reason || 'unknown'}`);
+
+        // Provide user-friendly error messages based on the reason
+        let userMessage = '';
+        switch (authResult?.reason) {
+          case 'no_wifi':
+            userMessage = '📶 WiFi Not Connected\n\nYou are not connected to any WiFi network.\n\nPlease:\n1. Enable WiFi on your device\n2. Connect to the classroom WiFi\n3. Try again';
+            break;
+          case 'wrong_bssid':
+            userMessage = `📶 Wrong WiFi Network\n\nYou are connected to the wrong WiFi network.\n\nExpected: Classroom ${currentClassInfo.room}\nCurrent: ${authResult.currentBSSID || 'Unknown'}\n\nPlease connect to the correct classroom WiFi.`;
+            break;
+          case 'room_not_configured':
+            userMessage = `⚙️ Room Not Configured\n\nRoom ${currentClassInfo.room} is not configured for WiFi validation.\n\nPlease contact your administrator.`;
+            break;
+          default:
+            userMessage = `❌ WiFi Validation Failed\n\nReason: ${authResult?.reason || 'Unknown error'}\n\nPlease ensure you are connected to the classroom WiFi network.`;
+        }
+
+        // Don't show alert here - let the calling function handle it
+        console.log('📱 User message prepared:', userMessage);
+        return false;
+      }
+
+      console.log(`✅ WiFi validation PASSED - Connected to ${currentClassInfo.room}`);
+      return true;
+
+    } catch (error) {
+      console.error('❌ Critical error in WiFi validation:', error);
+      console.error('   Error message:', error.message);
+      console.error('   Error stack:', error.stack);
+
+      // Update debug info with error
+      setWifiDebugInfo({
+        status: 'CRITICAL ERROR',
+        currentBSSID: 'Error',
+        expectedBSSID: 'Error',
+        room: currentClassInfo?.room || 'Unknown',
+        lastChecked: new Date().toLocaleTimeString(),
+        reason: error.message
+      });
+
+      // CRITICAL: Any error in WiFi validation should block timer
+      return false;
+    }
+  };
+
+  // Periodic sync to server during active classes for admin panel visibility
+  const startPeriodicSync = () => {
+    if (periodicSyncRef.current) {
+      clearInterval(periodicSyncRef.current);
+    }
+
+    periodicSyncRef.current = setInterval(async () => {
+      if (offlineTimerState.isRunning && userData) {
+        saveAttendanceToServer(offlineTimerState.timerSeconds, 'attending');
+        console.log('🔄 Periodic attendance sync to server');
+      }
+    }, 2 * 60 * 1000); // Sync every 2 minutes during active class
+  };
+
+  const stopPeriodicSync = () => {
+    if (periodicSyncRef.current) {
+      clearInterval(periodicSyncRef.current);
+      periodicSyncRef.current = null;
+    }
+  };
+
+  // Handle face verification trigger from CircularTimer
+  const handleFaceVerification = async () => {
+    console.log('🔒 Face verification triggered from CircularTimer');
+
+    // Only allow face verification during active class
+    if (!currentClassInfo || currentClassInfo.currentLecture === 'Break') {
+      alert('⚠️ Face verification is only available during active lectures.\n\nPlease wait for your class to start.');
+      return;
+    }
+
+    try {
+      // Get stored face embedding from SecureStorage
+      const storedEmbedding = await SecureStorage.getFaceEmbedding();
+
+      if (!storedEmbedding || storedEmbedding.length !== 192) {
+        console.log('❌ No face data found or invalid');
+        alert('❌ Face Data Not Found\n\nYour face data is not enrolled on this device.\n\nPlease login again to download your face data, or contact your teacher to enroll your face.');
+        return;
+      }
+
+      console.log('✅ Face data loaded from storage (192 floats)');
+      console.log('📸 Opening camera for face verification...');
+
+      // Start face verification using native module
+      const verificationResult = await FaceVerification.verifyFace(storedEmbedding);
+
+      console.log('🔍 Face verification result:', verificationResult);
+
+      if (!verificationResult.success || !verificationResult.isMatch) {
+        console.log('❌ Face verification failed');
+        alert(`❌ Face Verification Failed\n\n${verificationResult.message}\n\nSimilarity: ${verificationResult.similarityPercentage}%\n\nPlease try again or contact your teacher if you believe this is an error.`);
+        return;
+      }
+
+      console.log('✅ Face verified successfully!');
+      console.log(`   Similarity: ${verificationResult.similarityPercentage}%`);
+      alert(`✅ Face Verified!\n\nYour identity has been confirmed.\n\nSimilarity: ${verificationResult.similarityPercentage}%`);
+
+} catch (error) {
+      console.error('❌ Face verification error:', error);
+
+      if (error.message === 'VERIFICATION_CANCELLED') {
+        alert('❌ Verification Cancelled\n\nFace verification was cancelled.');
+      } else {
+        alert(`❌ Face Verification Error\n\n${error.message}\n\nPlease try again or contact support if the issue persists.`);
+      }
+    }
+  };
+
+  // Handle segment press from CircularTimer - Show past timer data or live timer state
+  const handleSegmentPress = async (segment) => {
+    console.log('🎯 Segment pressed:', segment);
+    console.log('   Segment ID:', segment.id);
+    console.log('   Full Label:', segment.fullLabel);
+    console.log('   Time:', segment.time);
+    console.log('   Room:', segment.room);
+
+    // Get current time and date for comparison
+    const now = new Date();
+    const currentTime = now.getHours() * 60 + now.getMinutes();
+    
+    // Parse segment time (format: "HH:MM-HH:MM")
+    let segmentStatus = 'future';
+    let segmentTime = segment.time || '';
+    
+    if (segmentTime && segmentTime.includes('-')) {
+      try {
+        const [startTimeStr, endTimeStr] = segmentTime.split('-');
+        const [startHour, startMin] = startTimeStr.split(':').map(Number);
+        const [endHour, endMin] = endTimeStr.split(':').map(Number);
+        
+        const startMinutes = startHour * 60 + startMin;
+        const endMinutes = endHour * 60 + endMin;
+        
+        if (currentTime > endMinutes) {
+          segmentStatus = 'past';
+        } else if (currentTime >= startMinutes && currentTime <= endMinutes) {
+          segmentStatus = 'current';
+        }
+      } catch (e) {
+        console.warn('Error parsing segment time:', e);
+      }
+    }
+
+    const displaySubject = segment.fullLabel || segment.label || 'Unknown';
+    const displayRoom = segment.room || 'N/A';
+    const displayTime = segmentTime || 'N/A';
+    const displayPeriod = segment.id ? `P${segment.id}` : '';
+
+    // For past periods - fetch attendance data from server and show modal
+    if (segmentStatus === 'past') {
+      try {
+        console.log('📊 Fetching attendance data for past period...');
+        const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+        const response = await fetch(`${SOCKET_URL}/api/attendance/student/${studentId}/date/${today}`);
+        const data = await response.json();
+        
+        let periodAttendance = null;
+        if (data.success && data.record && data.record.lectures) {
+          periodAttendance = data.record.lectures.find(l => l.period === `P${segment.id}`);
+        }
+        
+        if (periodAttendance) {
+          setPastPeriodData({
+            period: `P${segment.id}`,
+            subject: displaySubject,
+            room: displayRoom,
+            time: displayTime,
+            attended: periodAttendance.attended || 0,
+            total: periodAttendance.total || 0,
+            percentage: periodAttendance.percentage || 0,
+            present: periodAttendance.present || false
+          });
+        } else {
+          setPastPeriodData({
+            period: `P${segment.id}`,
+            subject: displaySubject,
+            room: displayRoom,
+            time: displayTime,
+            attended: 0,
+            total: 0,
+            percentage: 0,
+            present: false,
+            notFound: true
+          });
+        }
+        setViewingPastPeriod(true);
+      } catch (error) {
+        console.error('❌ Error fetching past period data:', error);
+        alert(`❌ Error fetching data\n\nCould not load attendance for ${displayPeriod}. ${displaySubject}`);
+      }
+    } else if (segmentStatus === 'current') {
+      // For current period - go back to live timer
+      setViewingPastPeriod(false);
+      setPastPeriodData(null);
+    } else {
+      // Future period - show info in timer UI format
+      setPastPeriodData({
+        period: displayPeriod,
+        subject: displaySubject,
+        room: displayRoom,
+        time: displayTime,
+        attended: 0,
+        total: 0,
+        percentage: 0,
+        present: false,
+        isFuture: true
+      });
+      setViewingPastPeriod(true);
+    }
+  };
+
+  // Close past period view and return to live timer state
+  const closePastPeriodView = () => {
+    setViewingPastPeriod(false);
+    setPastPeriodData(null);
+  };
+
+  // Face verify after teacher rejection during random ring
+  const handleRandomRingFaceVerify = async () => {
+    if (!randomRingData) return;
+
+    console.log('🔒 Random Ring face verification triggered, isRejection:', randomRingData.isRejection);
+
+    try {
+      // Get stored face embedding
+      const faceData = await OfflineTimerService.getStudentFaceData();
+      if (!faceData.success || !faceData.embedding || faceData.embedding.length !== 192) {
+        alert('❌ Face Data Not Found\n\nYour face data is not enrolled on this device.\n\nPlease contact your teacher.');
+        return;
+      }
+      const storedEmbedding = faceData.embedding;
+
+      // Run face verification
+      const verificationResult = await FaceVerification.verifyFace(storedEmbedding);
+      console.log('🔍 Random Ring face result:', verificationResult);
+
+      if (!verificationResult.success || !verificationResult.isMatch) {
+        alert(`❌ Face Verification Failed\n\nSimilarity: ${verificationResult.similarityPercentage}%\n\nPlease try again.`);
+        return;
+      }
+
+      const result = await processRandomRingVerification(randomRingData, 'verified');
+      if (result.success) {
+        if (result.mode === 'server') {
+          console.log('✅ Face verify accepted by server');
+        } else {
+          alert('✅ Face verified! Timer resumed.');
+        }
+      } else {
+        alert('❌ Verification failed. Please try again.');
+      }
+
+    } catch (error) {
+      console.error('❌ Random Ring face verify error:', error);
+      if (error.message === 'VERIFICATION_CANCELLED') {
+        alert('❌ Verification Cancelled. You can try again.');
+      } else {
+        alert(`❌ Error: ${error.message}\n\nPlease try again.`);
+      }
+    }
+  };
+
+  const handleStartPause = async () => {
+    // Only allow starting, no pausing
+    if (isRunning) {
+      // Already running, do nothing
+      return;
+    }
+
+    // Check if there's an active class
+    if (!currentClassInfo) {
+      alert('❌ No Active Class\n\nNo lecture is currently scheduled.\n\nPlease wait for the next lecture to start.');
+      return;
+    }
+
+    console.log('🔒 Starting attendance validation process...');
+
+    // Step 0: Check and request location permissions FIRST
+    console.log('🔐 Step 0: Checking location permissions...');
+    if (Platform.OS === 'android') {
+      // Use string constants directly to avoid null permission constants issue
+      const FINE_LOCATION = 'android.permission.ACCESS_FINE_LOCATION';
+      const COARSE_LOCATION = 'android.permission.ACCESS_COARSE_LOCATION';
+
+      const fineLocationGranted = await PermissionsAndroid.check(FINE_LOCATION);
+      const coarseLocationGranted = await PermissionsAndroid.check(COARSE_LOCATION);
+
+      console.log('🔐 Permission status:');
+      console.log('   Fine location:', fineLocationGranted);
+      console.log('   Coarse location:', coarseLocationGranted);
+
+      if (!fineLocationGranted && !coarseLocationGranted) {
+        console.log('🔐 Location permission not granted - requesting...');
+
+        // Request fine location permission with explanation
+        const granted = await PermissionsAndroid.request(
+          FINE_LOCATION,
+          {
+            title: 'Location Permission Required',
+            message: 'This app needs location permission to detect WiFi network details (BSSID) for attendance verification.\n\nThis is required by Android for security reasons.\n\nNo location data is collected or stored.',
+            buttonNeutral: 'Ask Me Later',
+            buttonNegative: 'Cancel',
+            buttonPositive: 'OK',
+          }
+        );
+
+        console.log('🔐 Permission request result:', granted);
+
+        if (granted !== PermissionsAndroid.RESULTS.GRANTED) {
+          console.log('❌ Location permission denied');
+          alert('❌ Permission Required\n\nLocation permission is required for WiFi-based attendance verification.\n\nPlease grant permission in device settings to continue.');
+          return;
+        }
+
+        console.log('✅ Location permission granted');
+      } else {
+        console.log('✅ Location permission already granted');
+      }
+    }
+
+    // CRITICAL: WiFi + Face verification required to start timer
+    // This prevents students from faking attendance from home
+
+    // 1. Check WiFi connection first (ASYNC)
+    console.log('📶 Step 1: Validating WiFi connection...');
+    const wifiValid = await isConnectedToClassroomWiFi(false); // Explicitly show alerts for manual start
+    if (!wifiValid) {
+      // Check if it's a simulated bypass
+      if (wifiDebugInfo.status === 'AUTHORIZED (SIMULATED)') {
+        console.log('🧪 WiFi bypass is active, proceeding...');
+      } else {
+        alert('❌ WiFi Validation Failed\n\nYou must be connected to the classroom WiFi to start attendance tracking.\n\nPlease connect to the authorized classroom network and try again.\n\n💡 Tip: If you\'re having WiFi issues, use the "Bypass WiFi Check" button for testing.');
+        return;
+      }
+    }
+
+    // 2. Face Verification (ASYNC)
+    console.log('👤 Step 2: Starting face verification...');
+    try {
+      // Get stored face embedding from SecureStorage
+      const storedEmbedding = await SecureStorage.getFaceEmbedding();
+
+      if (!storedEmbedding || storedEmbedding.length !== 192) {
+        console.log('❌ No face data found or invalid');
+        alert('❌ Face Data Not Found\n\nYour face data is not enrolled on this device.\n\nPlease login again to download your face data, or contact your teacher to enroll your face.');
+        return;
+      }
+
+      console.log('✅ Face data loaded from storage (192 floats)');
+      console.log('📸 Opening camera for face verification...');
+
+      // Start face verification using native module
+      const verificationResult = await FaceVerification.verifyFace(storedEmbedding);
+
+      console.log('🔍 Face verification result:', verificationResult);
+
+      if (!verificationResult.success || !verificationResult.isMatch) {
+        console.log('❌ Face verification failed');
+        alert(`❌ Face Verification Failed\n\n${verificationResult.message}\n\nSimilarity: ${verificationResult.similarityPercentage}%\n\nPlease try again or contact your teacher if you believe this is an error.`);
+        return;
+      }
+
+      console.log('✅ Face verified successfully!');
+      console.log(`   Similarity: ${verificationResult.similarityPercentage}%`);
+
+    } catch (error) {
+      console.error('❌ Face verification error:', error);
+
+      if (error.message === 'VERIFICATION_CANCELLED') {
+        alert('❌ Verification Cancelled\n\nFace verification was cancelled.\n\nYou must complete face verification to start attendance tracking.');
+      } else {
+        alert(`❌ Face Verification Error\n\n${error.message}\n\nPlease try again or contact support if the issue persists.`);
+      }
+      return;
+    }
+
+    console.log('✅ All validations passed - Starting timer');
+    console.log('   ✅ WiFi: Connected to classroom network');
+    console.log('   ✅ Face: Verified successfully');
+    console.log('   ✅ Class: Active lecture in progress');
+
+    // Timer removed - period-based attendance
+
+    if (socketRef.current && socketRef.current.connected) {
+      socketRef.current.emit('start_timer', {
+        studentId,          // === enrollmentNo always
+        name: studentName,
+        semester,
+        branch,
+        currentClass: currentClassInfo?.subject,
+        lectureDuration: currentClassInfo?.duration || 60,
+        wifiValidated: true,
+        faceVerified: true,
+        validationTimestamp: new Date(_appGetBootMs()).toISOString()
+      });
+      console.log('⏱️ Sent start_timer to server with full validations');
+    } else {
+      console.warn('⚠️ Socket not connected, cannot start centralized timer');
+      // Don't allow offline timer without server validation
+      alert('❌ Server Connection Required\n\nServer connection is required for attendance tracking.\n\nPlease check your internet connection.');
+      // Timer removed - period-based attendance
+    }
+  };
+
+  // Face verification functions removed - no longer needed
+
+  const handleReset = () => {
+    // Reset stops the timer
+    // Timer removed - period-based attendance
+    // Face verification removed - no longer needed
+    clearInterval(intervalRef.current);
+
+    // Stop timer using server-side system
+    if (socketRef.current && socketRef.current.connected) {
+      console.log('⏹️  Stopping server-side timer...');
+      socketRef.current.emit('stop_timer', {
+        studentId: studentId,   // === enrollmentNo always
+      });
+      console.log('⏹️ Sent stop_timer to server');
+    } else {
+      // Fallback to old method
+      updateTimerOnServer(0, false, 'absent');
+    }
+  };
+
+  const formatTime = (seconds) => {
+    const hours = Math.floor(seconds / 3600);
+    const mins = Math.floor((seconds % 3600) / 60);
+    return `${hours.toString().padStart(2, '0')}:${mins.toString().padStart(2, '0')}`;
+  };
+
+  // Format time in HH:MM:SS for attendance display
+  const formatTimeHMS = (seconds) => {
+    const hours = Math.floor(seconds / 3600);
+    const minutes = Math.floor((seconds % 3600) / 60);
+    const secs = seconds % 60;
+    return `${hours}h ${minutes}m ${secs}s`;
+  };
+
+  const getInitials = (name) => {
+    if (!name) return '?';
+    const parts = name.trim().split(' ');
+    if (parts.length === 1) return parts[0].charAt(0).toUpperCase();
+    return (parts[0].charAt(0) + parts[parts.length - 1].charAt(0)).toUpperCase();
+  };
+
+  const refreshUserProfile = async () => {
+    if (!loginId || !selectedRole) return;
+
+    try {
+      console.log('🔄 Refreshing profile for:', loginId, selectedRole);
+      const response = await fetch(POST_REFRESH_PROFILE, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          id: loginId,
+          role: selectedRole
+        })
+      });
+
+      const data = await response.json();
+      if (data.success && data.user) {
+        setUserData(data.user);
+        await AsyncStorage.setItem(USER_DATA_KEY, JSON.stringify(data.user));
+        console.log('✅ Profile refreshed:', data.user.name);
+        if (selectedRole === 'teacher') {
+          console.log('✅ canEditTimetable:', data.user.canEditTimetable);
+        }
+        return data.user;
+      } else {
+        console.log('❌ Profile refresh failed:', data.message);
+        return null;
+      }
+    } catch (error) {
+      console.log('❌ Error refreshing profile:', error);
+      return null;
+    }
+  };
+
+  // Glow effect only in dark theme
+  const glowOpacity = glowAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: isDarkTheme ? [0.3, 0.8] : [0, 0],
+  });
+
+
+
+  // Login function
+  const handleLogin = async () => {
+    if (!loginId.trim() || !loginPassword.trim()) {
+      setLoginError('Please enter both ID and password');
+      return;
+    }
+
+    setIsLoggingIn(true);
+    setLoginError('');
+
+    try {
+      const response = await fetch(POST_LOGIN, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          id: loginId.trim(),
+          password: loginPassword.trim()
+        })
+      });
+
+      const data = await response.json();
+
+      if (data.success) {
+        // Debug: Log user data to check photoUrl
+        console.log('🔍 Login successful, user data:', data.user);
+        console.log('📸 PhotoUrl:', data.user.photoUrl);
+        console.log('👤 Face embedding:', data.user.faceEmbedding ? `${data.user.faceEmbedding.length} floats` : 'Not enrolled');
+
+        const normalizedUser = normalizeStudentUserData(data.user);
+
+        // Update state first for instant UI feedback
+        setUserData(normalizedUser);
+        setSelectedRole(normalizedUser.role);
+        setLoggedInUserId(loginId.trim()); // Save the logged-in user ID
+        setShowLogin(false);
+
+        // Prepare storage data
+        const storageData = [
+          [USER_DATA_KEY, JSON.stringify(normalizedUser)],
+          [LOGIN_ID_KEY, loginId.trim()],
+          [ROLE_KEY, normalizedUser.role]
+        ];
+
+        if (normalizedUser.role === 'student') {
+          setStudentName(normalizedUser.name);
+          // studentId is always enrollmentNo — never fall back to _id
+          const studentIdValue = normalizedUser.enrollmentNo;
+          setStudentId(studentIdValue);
+          setSemester(normalizedUser.semester);
+          setBranch(normalizedUser.branch);
+          // Join class socket room so student receives random ring notifications
+          joinClassRoom(normalizedUser.semester?.toString(), normalizedUser.branch);
+
+          // Fire all post-login fetches in parallel — no sequential waiting
+          Promise.all([
+            fetchTimetable(normalizedUser.semester, normalizedUser.branch),
+            fetchDailyBSSIDSchedule(normalizedUser.enrollmentNo, true), // Force refresh like "Refresh from Server" button
+            loadTodayAttendance(studentIdValue),
+            refreshUserProfile(), // Fetch latest profile data from server (like refresh button)
+          ]).catch(() => { });
+
+          // Force sync timer data after login (like refresh button does)
+          setTimeout(async () => {
+            try {
+              const syncResult = await OfflineTimerService.forceSyncTimerData();
+              if (syncResult.success) {
+                console.log('✅ Timer synced after login');
+              }
+            } catch (e) {
+              console.warn('⚠️ Timer sync after login failed:', e.message);
+            }
+          }, 1000);
+
+          storageData.push(
+            [STUDENT_NAME_KEY, normalizedUser.name],
+            [STUDENT_ID_KEY, studentIdValue]
+          );
+
+          if (normalizedUser.semester) storageData.push([SEMESTER_KEY, normalizedUser.semester]);
+          if (normalizedUser.branch) storageData.push([BRANCH_KEY, normalizedUser.branch]);
+
+          // Save face embedding at login — this is the primary offline cache.
+          // We use saveCachedServerEmbedding so it writes to ALL storage keys:
+          //   @letsbunk_cached_server_embedding  ← read by getStudentFaceData offline fallback
+          //   @letsbunk_cached_server_embedding_enrolled_at ← used to detect re-enrollment
+          //   @letsbunk_face_embedding            ← read by registerCheckIn
+          // This guarantees face verification works offline immediately after login,
+          // even if the student never had internet during a timer start before.
+          if (data.user.faceEmbedding && Array.isArray(data.user.faceEmbedding) && data.user.faceEmbedding.length > 0) {
+            const enrolledAt = data.user.faceEnrolledAt || data.user.enrolledAt || new Date().toISOString();
+            SecureStorage.saveCachedServerEmbedding(data.user.faceEmbedding, enrolledAt)
+              .then(() => SecureStorage.saveEnrollmentNumber(normalizedUser.enrollmentNo))
+              .catch(() => { });
+          }
+        } else if (data.user.role === 'teacher') {
+          // For teachers: fetch students and optionally set semester/branch for timetable
+          // Teachers can manually select semester/branch via the selector, but we try to restore preferences
+          const storedSemester = await AsyncStorage.getItem(SEMESTER_KEY);
+          const storedBranch = await AsyncStorage.getItem(BRANCH_KEY);
+          const storedRoom = await AsyncStorage.getItem('@assigned_room');
+          const storedPeriodStr = await AsyncStorage.getItem('@assigned_period');
+          const storedManualSet = await AsyncStorage.getItem('@is_period_manually_set');
+          
+          if (storedSemester) {
+            console.log('📚 Restoring teacher preferences:', storedSemester, storedBranch || 'No Branch');
+            setSemester(storedSemester);
+            setBranch(storedBranch);
+            setManualSelection({ semester: storedSemester, branch: storedBranch });
+            
+            const storedPeriod = storedPeriodStr ? parseInt(storedPeriodStr) : null;
+            if (storedRoom && storedPeriod) {
+              setAssignedRoom(storedRoom);
+              setAssignedPeriod(storedPeriod);
+              setIsPeriodManuallySet(storedManualSet === 'true');
+              setCurrentClassInfo({
+                subject: `Manual Selection (${storedRoom}, Period ${storedPeriod})`,
+                branch: storedBranch,
+                semester: storedSemester,
+                isManual: true
+              });
+            } else {
+              setCurrentClassInfo({
+                subject: storedBranch ? 'Manual Selection (Assign Classroom)' : 'Select Branch',
+                branch: storedBranch,
+                semester: storedSemester,
+                isManual: true
+              });
+            }
+          }
+          
+          // Fetch students after a short delay to ensure socket is connecting
+          setTimeout(() => fetchStudents(), 100);
+          refreshUserProfile(); // Fetch latest profile data from server (like refresh button)
+        }
+
+        // Save session to AsyncStorage so it persists across app restarts
+        AsyncStorage.multiSet(storageData).catch(err => console.warn('⚠️ Failed to save session:', err));
+      } else {
+        // Server returned an error message
+        setLoginError(data.message || 'Login failed');
+        console.error('Login failed:', data.message);
+      }
+    } catch (error) {
+      // Network or connection error
+      console.error('Login error:', error);
+
+      if (error.message === 'Network request failed') {
+        setLoginError('Cannot connect to server. Please check your internet connection.');
+      } else if (error.message.includes('timeout')) {
+        setLoginError('Server is not responding. Please try again later.');
+      } else {
+        setLoginError('Connection error. Please check server.');
+      }
+    } finally {
+      setIsLoggingIn(false);
+    }
+  };
+
+  // Pull-to-refresh handlers (defined at top level to avoid hooks violations)
+  const onRefreshTeacher = async () => {
+    setRefreshingTeacher(true);
+    setIsOffline(false);
+    try {
+      // Test server connection first (AbortController — fetch has no timeout option in RN)
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 5000);
+      const healthCheck = await fetch(`${SOCKET_URL}/api/health`, { signal: controller.signal });
+      clearTimeout(timeoutId);
+      if (!healthCheck.ok) {
+        throw new Error('Server not responding');
+      }
+
+      await fetchStudents();
+      await refreshUserProfile();
+      setIsOffline(false);
+    } catch (error) {
+      console.log('Error refreshing teacher dashboard:', error);
+      setIsOffline(true);
+      // Show offline message for 3 seconds
+      setTimeout(() => setIsOffline(false), 3000);
+    } finally {
+      setRefreshingTeacher(false);
+    }
+  };
+
+const onRefreshStudent = async () => {
+    setRefreshingStudent(true);
+    setIsOffline(false);
+
+    try {
+      console.log('🔄 Student refresh started - checking connectivity and syncing timer...');
+
+      // Force sync timer data if OfflineTimerService is available (wrapped in try-catch to not block refresh)
+      let syncResult = null;
+      if (offlineTimerInitialized) {
+        console.log('⏱️ Force syncing timer data...');
+        try {
+          syncResult = await OfflineTimerService.forceSyncTimerData();
+        } catch (syncError) {
+          console.warn('⚠️ Timer sync error (non-blocking):', syncError.message);
+          syncResult = { success: false, error: syncError.message, isOffline: false };
+        }
+
+        if (syncResult && syncResult.success) {
+          console.log('✅ Timer sync successful');
+        } else if (syncResult && !syncResult.success) {
+          console.log('⚠️ Timer sync failed:', syncResult.error);
+        }
+      }
+
+      // Test server connection (AbortController — fetch has no timeout option in RN)
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 5000);
+      const healthCheck = await fetch(`${SOCKET_URL}/api/health`, { signal: controller.signal });
+      clearTimeout(timeoutId);
+      if (!healthCheck.ok) {
+        throw new Error('Server not responding');
+      }
+
+      // Refresh timetable and profile data
+      const updatedUser = await refreshUserProfile();
+      
+      const currentSem = updatedUser?.semester || semester;
+      const currentBranch = updatedUser?.branch || branch;
+
+      if (currentSem && currentBranch) {
+        await fetchTimetable(currentSem, currentBranch);
+      }
+      
+      const targetStudentId = updatedUser?.enrollmentNo || studentId;
+      if (targetStudentId) {
+        console.log(`🔄 Refreshing BSSID schedule for ${targetStudentId}...`);
+        await fetchDailyBSSIDSchedule(targetStudentId, true);
+      }
+
+      // Show success message with sync info
+      showToast('✅ Refreshed successfully', 'success');
+
+      setIsOffline(false);
+    } catch (error) {
+      console.log('❌ Error refreshing student dashboard:', error);
+      setIsOffline(true);
+
+      // Show offline message
+      showToast('📶 Offline — timer running locally, will sync when reconnected', 'warning', 5000);
+
+      // Auto-hide offline indicator after 5 seconds
+      setTimeout(() => setIsOffline(false), 5000);
+    } finally {
+      setRefreshingStudent(false);
+    }
+  };
+
+  // Loading Screen — show splash once, then a plain loader while session restores
+  if (!splashDone) {
+    return (
+      <SplashScreenView onDone={() => setSplashDone(true)} />
+    );
+  }
+
+  if (isInitializing) {
+    // Session is being restored from storage — show a minimal screen, not the splash again
+    return (
+      <View style={{ flex: 1, backgroundColor: 'rgb(250,245,234)', justifyContent: 'center', alignItems: 'center' }}>
+        <ActivityIndicator size="large" color="#d97706" />
+      </View>
+    );
+  }
+
+  // Login Screen
+  if (showLogin) {
+    return (
+      <LoginScreen
+        loginId={loginId}
+        setLoginId={setLoginId}
+        loginPassword={loginPassword}
+        setLoginPassword={setLoginPassword}
+        loginError={loginError}
+        setLoginError={setLoginError}
+        isLoggingIn={isLoggingIn}
+        handleLogin={handleLogin}
+      />
+    );
+  }
+
+  // Role Selection Screen (kept for fallback)
+  if (!selectedRole) {
+    const roleConfig = config?.roleSelection || getDefaultConfig().roleSelection;
+    return (
+      <Animated.View style={[styles.container, { backgroundColor: theme.background, opacity: fadeAnim }]}>
+        <StatusBar style={theme.statusBar} />
+        <Text style={[styles.glowText, {
+          fontSize: roleConfig?.title?.fontSize || 36,
+          color: theme.primary,
+        }]}>
+          {roleConfig?.title?.text || 'Who are you?'}
+        </Text>
+        <Text style={{
+          fontSize: roleConfig?.subtitle?.fontSize || 16,
+          color: theme.textSecondary,
+          marginBottom: 60,
+        }}>
+          {roleConfig?.subtitle?.text || 'Select your role to continue'}
+        </Text>
+
+        <View style={styles.roleContainer}>
+          {(roleConfig?.roles || []).map((role) => (
+            <TouchableOpacity
+              key={role.id}
+              onPress={() => handleRoleSelect(role.id)}
+              activeOpacity={0.8}
+            >
+              <Animated.View
+                style={[
+                  styles.roleButton,
+                  {
+                    backgroundColor: role?.backgroundColor || theme.primary,
+                    shadowColor: theme.primary,
+                    shadowOpacity: glowOpacity,
+                    shadowRadius: 20,
+                    elevation: 15,
+                  }
+                ]}
+              >
+                <Text style={styles.roleIcon}>{role?.icon || '👤'}</Text>
+                <Text style={[styles.roleText, { color: role?.textColor || '#0a1628' }]}>
+                  {role?.text || 'Role'}
+                </Text>
+              </Animated.View>
+            </TouchableOpacity>
+          ))}
+        </View>
+      </Animated.View>
+    );
+  }
+
+  // Student Name Input Screen
+  if (selectedRole === 'student' && showNameInput) {
+    const nameConfig = config?.studentNameInput || getDefaultConfig().studentNameInput;
+    return (
+      <Animated.View style={[styles.container, { backgroundColor: nameConfig?.backgroundColor || '#0a1628', opacity: fadeAnim }]}>
+        <StatusBar style="light" />
+        <Text style={[styles.glowText, {
+          fontSize: nameConfig?.title?.fontSize || 32,
+          color: nameConfig?.title?.color || '#00f5ff',
+        }]}>
+          {nameConfig?.title?.text || 'Enter Your Name'}
+        </Text>
+        <Text style={{
+          fontSize: nameConfig?.subtitle?.fontSize || 14,
+          color: nameConfig?.subtitle?.color || '#00d9ff',
+          marginBottom: 40,
+        }}>
+          {nameConfig?.subtitle?.text || 'This will be visible to your teacher'}
+        </Text>
+
+        <Animated.View style={[styles.inputContainer, {
+          backgroundColor: nameConfig?.inputBackgroundColor || theme.cardBackground,
+          borderColor: nameConfig?.inputBorderColor || theme.border,
+          shadowColor: theme.primary,
+          shadowOpacity: glowOpacity,
+          shadowRadius: 15,
+        }]}>
+          <TextInput
+            style={[styles.input, { color: nameConfig?.inputTextColor || theme.primary }]}
+            placeholder={nameConfig?.placeholder || 'Your Name'}
+            placeholderTextColor={theme.textSecondary + '80'}
+            value={studentName}
+            onChangeText={setStudentName}
+            autoFocus
+          />
+        </Animated.View>
+
+        <TouchableOpacity onPress={handleNameSubmit} activeOpacity={0.8}>
+          <Animated.View style={[styles.submitButton, {
+            shadowColor: theme.primary,
+            shadowOpacity: glowOpacity,
+            shadowRadius: 20,
+          }]}>
+            <Text style={styles.submitButtonText}>{nameConfig?.buttonText || 'START SESSION'}</Text>
+          </Animated.View>
+        </TouchableOpacity>
+      </Animated.View>
+    );
+  }
+
+  // Timetable Modal (for teachers only)
+  if (selectedRole === 'teacher' && showTimetable && timetable) {
+    // Get days dynamically from timetable
+    const daysFull = Object.keys(timetable.timetable);
+    const days = daysFull.map(day => day.substring(0, 3).charAt(0).toUpperCase() + day.substring(1, 3));
+    const isTeacher = selectedRole === 'teacher';
+    const canEdit = isTeacher && (userData?.canEditTimetable || false);
+
+    const handleCellPress = (dayIdx, periodIdx) => {
+      if (!canEdit) return;
+      const period = timetable.timetable[daysFull[dayIdx]][periodIdx];
+      setEditingCell({ dayIdx, periodIdx });
+      setEditSubject(period.subject || '');
+      setEditRoom(period.room || '');
+    };
+
+    const handleSaveCell = () => {
+      if (!editingCell) return;
+      const { dayIdx, periodIdx } = editingCell;
+      const updatedTimetable = { ...timetable };
+      updatedTimetable.timetable[daysFull[dayIdx]][periodIdx] = {
+        ...updatedTimetable.timetable[daysFull[dayIdx]][periodIdx],
+        subject: editSubject,
+        room: editRoom,
+        isBreak: false
+      };
+      setTimetable(updatedTimetable);
+      setEditingCell(null);
+    };
+
+    const handleToggleBreak = (dayIdx, periodIdx) => {
+      if (!canEdit) return;
+      const updatedTimetable = { ...timetable };
+      const currentBreak = updatedTimetable.timetable[daysFull[dayIdx]][periodIdx].isBreak;
+      updatedTimetable.timetable[daysFull[dayIdx]][periodIdx] = {
+        ...updatedTimetable.timetable[daysFull[dayIdx]][periodIdx],
+        isBreak: !currentBreak,
+        subject: !currentBreak ? '' : updatedTimetable.timetable[daysFull[dayIdx]][periodIdx].subject,
+        room: !currentBreak ? '' : updatedTimetable.timetable[daysFull[dayIdx]][periodIdx].room
+      };
+      setTimetable(updatedTimetable);
+    };
+
+    const handleSaveTimetable = () => {
+      saveTimetable(timetable);
+    };
+
+    return (
+      <Animated.View style={[styles.container, { backgroundColor: theme.background, opacity: fadeAnim }]}>
+        <StatusBar style={theme.statusBar} />
+        <View style={styles.timetableHeader}>
+          <Text style={[styles.glowText, { fontSize: 24, color: theme.primary }]}>
+            📅 Timetable {canEdit ? '(Edit Mode)' : '(View Only)'}
+          </Text>
+          <Text style={{ color: theme.textSecondary, fontSize: 14, marginTop: 5 }}>
+            Sem {timetable.semester} - {timetable.branch}
+          </Text>
+          <View style={{ flexDirection: 'row', gap: 15, marginTop: 10 }}>
+            {canEdit && (
+              <TouchableOpacity onPress={handleSaveTimetable}>
+                <Text style={{ color: isDarkTheme ? '#00ff88' : '#10b981', fontSize: 14, fontWeight: 'bold' }}>💾 Save</Text>
+              </TouchableOpacity>
+            )}
+            <TouchableOpacity onPress={() => { setShowTimetable(false); setEditingCell(null); }}>
+              <Text style={{ color: theme.primary, fontSize: 14 }}>✕ Close</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+
+        <ScrollView horizontal style={styles.timetableScrollHorizontal}>
+          <View style={styles.timetableGrid}>
+            <View style={styles.gridRow}>
+              <View style={[styles.gridCell, styles.cornerCell, {
+                backgroundColor: theme.cardBackground,
+                borderColor: theme.border
+              }]}>
+                <Text style={[styles.cornerText, { color: theme.textSecondary }]}>Day/Period</Text>
+              </View>
+              {timetable.periods.map((period, idx) => (
+                <View key={idx} style={[styles.gridCell, styles.headerCell, {
+                  backgroundColor: theme.cardBackground,
+                  borderColor: theme.border
+                }]}>
+                  <Text style={[styles.periodHeaderText, { color: theme.primary }]}>P{period.number}</Text>
+                  <Text style={[styles.timeText, { color: theme.textSecondary }]}>
+                    {period.startTime}-{period.endTime}
+                  </Text>
+                </View>
+              ))}
+            </View>
+
+            {days.map((day, dayIdx) => (
+              <View key={day} style={styles.gridRow}>
+                <View style={[styles.gridCell, styles.dayCell, {
+                  backgroundColor: theme.cardBackground,
+                  borderColor: theme.border
+                }]}>
+                  <Text style={[styles.dayText, { color: theme.primary }]}>{day}</Text>
+                </View>
+                {timetable.timetable[daysFull[dayIdx]].map((period, periodIdx) => (
+                  <TouchableOpacity
+                    key={periodIdx}
+                    onPress={() => handleCellPress(dayIdx, periodIdx)}
+                    onLongPress={() => canEdit && handleToggleBreak(dayIdx, periodIdx)}
+                    disabled={!canEdit}
+                    activeOpacity={canEdit ? 0.7 : 1}
+                  >
+                    <View style={[
+                      styles.gridCell,
+                      styles.dataCell,
+                      {
+                        backgroundColor: period.isBreak
+                          ? (isDarkTheme ? '#1a2a3a' : '#fef3c7')
+                          : theme.background,
+                        borderColor: theme.border
+                      }
+                    ]}>
+                      {period.isBreak ? (
+                        <Text style={[styles.breakTextSmall, { color: theme.textSecondary }]}>☕</Text>
+                      ) : (
+                        <>
+                          <Text style={[styles.subjectTextSmall, { color: theme.text }]} numberOfLines={2}>
+                            {period.subject || '-'}
+                          </Text>
+                          {period.room && (
+                            <Text style={[styles.roomTextSmall, { color: theme.textSecondary }]} numberOfLines={1}>
+                              {period.room}
+                            </Text>
+                          )}
+                        </>
+                      )}
+                    </View>
+                  </TouchableOpacity>
+                ))}
+              </View>
+            ))}
+          </View>
+        </ScrollView>
+
+        {editingCell && canEdit && (
+          <View style={styles.editModal}>
+            <View style={[styles.editModalContent, {
+              backgroundColor: theme.cardBackground,
+              borderColor: theme.border
+            }]}>
+              <Text style={[styles.editModalTitle, { color: theme.primary }]}>Edit Period</Text>
+              <Text style={[styles.editModalSubtitle, { color: theme.textSecondary }]}>
+                {days[editingCell.dayIdx]} - Period {editingCell.periodIdx + 1}
+              </Text>
+
+              <TextInput
+                style={[styles.editInput, {
+                  backgroundColor: theme.background,
+                  borderColor: theme.border,
+                  color: theme.text
+                }]}
+                placeholder="Subject Name"
+                placeholderTextColor={theme.textSecondary + '80'}
+                value={editSubject}
+                onChangeText={setEditSubject}
+                autoFocus
+              />
+
+              <TextInput
+                style={[styles.editInput, {
+                  backgroundColor: theme.background,
+                  borderColor: theme.border,
+                  color: theme.text
+                }]}
+                placeholder="Room Number"
+                placeholderTextColor={theme.textSecondary + '80'}
+                value={editRoom}
+                onChangeText={setEditRoom}
+              />
+
+              <View style={styles.editModalButtons}>
+                <TouchableOpacity onPress={handleSaveCell} style={[styles.editModalButton, { backgroundColor: theme.primary }]}>
+                  <Text style={[styles.editModalButtonText, { color: isDarkTheme ? '#0a1628' : '#ffffff' }]}>✓ Save</Text>
+                </TouchableOpacity>
+                <TouchableOpacity onPress={() => setEditingCell(null)} style={[styles.editModalButton, styles.editModalCancelButton, { backgroundColor: theme.border }]}>
+                  <Text style={[styles.editModalButtonText, { color: theme.text }]}>✕ Cancel</Text>
+                </TouchableOpacity>
+              </View>
+
+              <Text style={styles.editModalHint}>💡 Long press to toggle break</Text>
+            </View>
+          </View>
+        )}
+      </Animated.View>
+    );
+  }
+
+  // Logout function
+  const handleLogout = async () => {
+    // Confirmation dialog to prevent accidental logout
+    Alert.alert(
+      '🚪 Logout',
+      'Sign out of your account?',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Logout', style: 'destructive',
+          onPress: async () => {
+            console.log('🚪 Logging out — cleaning up all services...');
+
+            // 1. Stop timer service completely
+            try {
+              await OfflineTimerService.stopTimer('logout');
+              OfflineTimerService.cleanup();
+              await OfflineTimerService.clearUserData();
+              console.log('✅ OfflineTimerService stopped, cleaned up and user data cleared');
+            } catch (e) { console.warn('OfflineTimerService cleanup error:', e.message); }
+
+            // 2. Disconnect socket
+            try {
+              if (socketRef.current) {
+                socketRef.current.removeAllListeners();
+                socketRef.current.disconnect();
+                socketRef.current = null;
+                console.log('✅ Socket disconnected');
+              }
+            } catch (e) { console.warn('Socket cleanup error:', e.message); }
+
+            // 3. Deactivate keep awake
+            try { deactivateKeepAwake('attendance-tracking'); } catch (_) { }
+
+            // 4. Clear ALL AsyncStorage keys including semester/branch
+            try {
+              await AsyncStorage.multiRemove([
+                ROLE_KEY, STUDENT_NAME_KEY, STUDENT_ID_KEY,
+                USER_DATA_KEY, LOGIN_ID_KEY, DAILY_VERIFICATION_KEY,
+                SEMESTER_KEY, BRANCH_KEY, CACHE_KEY, THEME_KEY
+              ]);
+              await SecureStorage.clearFaceData();
+              await BSSIDStorage.clearSchedule();
+              console.log('✅ All storage cleared');
+            } catch (e) { console.warn('Storage clear error:', e.message); }
+
+            // 5. Clear all intervals
+            clearInterval(intervalRef.current);
+
+            // 6. Reset ALL state to initial values
+            setUserData(null);
+            setLoginId('');
+            setLoginPassword('');
+            setLoggedInUserId('');
+            setStudentName('');
+            setStudentId(null);
+            setSemester(null);
+            setBranch(null);
+            setSelectedRole(null);
+            setTimetable(null);
+            setStudents([]);
+            setTodayAttendance({
+              date: new Date(_appGetBootMs()).toDateString(),
+              lectures: [], totalAttended: 0, totalClassTime: 0, dayPresent: false
+            });
+            setOfflineTimerState({
+              isRunning: false, isPaused: false, timerSeconds: 0,
+              currentLecture: null, isOnline: true, hasInternetConnection: true,
+              isConnectedToAuthorizedWiFi: false, lastSyncTime: null,
+              queuedSyncs: 0, pendingSyncCount: 0
+            });
+            setOfflineTimerInitialized(false);
+            setActiveTab('home');
+            setShowLogin(true);
+            setThemeMode('warm'); // Reset theme to default
+            console.log('✅ Logout complete');
+          }
+        }
+      ]
+    );
+  };
+
+  // Manual attendance marking handler (swipe action)
+  const handleManualMark = async (enrollmentNo, scope) => {
+    try {
+      if (!currentClassInfo) {
+        alert('❌ No active class to mark attendance for');
+        return;
+      }
+
+      const requestPeriod = currentClassInfo.period ? `P${currentClassInfo.period}` : 'detect';
+
+      console.log(`👨‍🏫 Manual marking ${enrollmentNo} as present (Scope: ${scope})`);
+      console.log(`🔗 URL: ${POST_ATTENDANCE_MANUAL_MARK}`);
+      console.log(`📦 Body:`, {
+        teacherId: loginId,
+        teacherName: userData?.name || 'Teacher',
+        enrollmentNo,
+        period: requestPeriod,
+        scope,
+        reason: `Manual marking (${scope === 'allday' ? 'All Day' : 'Current Class'})`
+      });
+      
+      const response = await fetch(POST_ATTENDANCE_MANUAL_MARK, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          teacherId: loginId,
+          teacherName: userData?.name || 'Teacher',
+          enrollmentNo,
+          period: requestPeriod,
+          status: 'present',
+          scope,
+          reason: `Manual marking (${scope === 'allday' ? 'All Day' : 'Current Class'})`
+        })
+      });
+
+      const result = await response.json();
+      if (result.success) {
+        showToast(`✅ Marked ${scope === 'allday' ? 'all day' : 'current class'} present`, 'success');
+        // socket will handle the real-time update, but let's refresh just in case
+        fetchStudents();
+      } else {
+        alert('❌ Failed to mark student: ' + (result.message || result.error));
+      }
+    } catch (error) {
+      console.error('Manual mark error:', error);
+      alert('❌ Error connecting to server');
+    }
+  };
+
+  // ─── Teacher WebRTC P2P Engine ────────────────────────────────────────────
+
+  /** Check if teacher is currently on WiFi */
+  const checkTeacherWifi = async () => {
+    try {
+      const result = await NativeWiFiService.validateWiFiWithPermissions();
+      console.log('[P2P] validateWiFiWithPermissions result:', result);
+      
+      if (result && result.success) {
+        const onWifi = !!(result.currentBSSID && result.currentBSSID !== 'Not detected' && result.currentBSSID !== 'null');
+        setTeacherIsOnWifi(onWifi);
+        return onWifi;
+      }
+
+      // Handle the case where validateWiFiWithPermissions returned success: false due to location/permission errors.
+      // (It returns an error object instead of throwing).
+      const errMsg = result?.error || '';
+      if (
+        errMsg.includes('Location') || errMsg.includes('location') ||
+        errMsg.includes('Permission') || errMsg.includes('permission') ||
+        errMsg.includes('disabled') || result?.code === 'WIFI_DISABLED'
+      ) {
+        try {
+          const wifiState = await NativeWiFiService.getWiFiState();
+          const onWifi = !!(wifiState?.isWifiEnabled);
+          console.log('[P2P] Location/Permission issue — using WiFi state fallback, onWifi:', onWifi);
+          setTeacherIsOnWifi(onWifi);
+          return onWifi;
+        } catch (innerErr) {
+          console.log('[P2P] WiFi state fallback failed — assuming WiFi on');
+          setTeacherIsOnWifi(true);
+          return true;
+        }
+      }
+
+      setTeacherIsOnWifi(false);
+      return false;
+    } catch (err) {
+      console.error('[P2P] checkTeacherWifi caught error:', err);
+      // Last resort: if WiFi radio is on, allow LAN P2P even when BSSID read fails
+      try {
+        const wifiState = await NativeWiFiService.getWiFiState();
+        if (wifiState?.isWifiEnabled) {
+          console.log('[P2P] BSSID check failed but WiFi radio is on — allowing LAN');
+          setTeacherIsOnWifi(true);
+          return true;
+        }
+      } catch (_) {}
+      setTeacherIsOnWifi(false);
+      return false;
+    }
+  };
+
+  /**
+   * Establish a WebRTC P2P DataChannel from teacher → one student.
+   * Resolves the student's fresh socket ID from the server first.
+   * @param {string} enrollmentNo
+   * @param {string} studentName
+   * @param {function} [onOpen] - optional callback when DC opens
+   */
+  const teacherEstablishP2P = async (enrollmentNo, studentName, onOpen) => {
+    if (!socketRef.current?.connected) {
+      console.warn(`[P2P] Cannot establish new connection to ${enrollmentNo} — socket offline. P2P requires internet for initial signaling.`);
+      return;
+    }
+
+    // Close any stale connection first
+    if (teacherRtcConnections.current[enrollmentNo]) {
+      try { teacherRtcConnections.current[enrollmentNo].close(); } catch {}
+      delete teacherRtcConnections.current[enrollmentNo];
+      delete teacherDataChannels.current[enrollmentNo];
+    }
+
+    // Get fresh socket ID for this student from the server
+    const freshSocketId = await new Promise((resolve) => {
+      const t = setTimeout(() => resolve(null), 4000);
+      socketRef.current.emit('get_student_socket', { enrollmentNo }, ({ socketId }) => {
+        clearTimeout(t);
+        resolve(socketId);
+      });
+    });
+
+    if (!freshSocketId) {
+      console.warn(`[P2P] Student ${enrollmentNo} not online on server`);
+      setTeacherP2PStatus(prev => ({ ...prev, [enrollmentNo]: 'offline' }));
+      return;
+    }
+
+    console.log(`[P2P] Establishing DataChannel → ${enrollmentNo} (${freshSocketId})`);
+    setTeacherP2PStatus(prev => ({ ...prev, [enrollmentNo]: 'connecting' }));
+
+    const pc = new RTCPeerConnection(RTC_CONFIG);
+    teacherRtcConnections.current[enrollmentNo] = pc;
+
+    const dc = pc.createDataChannel('p2p_channel');
+    teacherDataChannels.current[enrollmentNo] = dc;
+
+    dc.onopen = () => {
+      console.log(`[P2P] ✅ DataChannel OPEN → ${enrollmentNo}`);
+      setTeacherP2PStatus(prev => ({ ...prev, [enrollmentNo]: 'open' }));
+      if (onOpen) onOpen(dc);
+    };
+
+    dc.onclose = () => {
+      console.log(`[P2P] DataChannel CLOSED → ${enrollmentNo}`);
+      setTeacherP2PStatus(prev => ({ ...prev, [enrollmentNo]: 'closed' }));
+      delete teacherDataChannels.current[enrollmentNo];
+      delete teacherRtcConnections.current[enrollmentNo];
+    };
+
+    dc.onmessage = (event) => {
+      try {
+        const msg = JSON.parse(event.data);
+        console.log(`[P2P] Message from ${enrollmentNo}:`, msg);
+        if (msg.type === 'RANDOM_RING_ACK') {
+          console.log(`[P2P] 🔔 ${enrollmentNo} acknowledged ring! (packet ${msg.ackFor || '?'})`);
+        } else if (msg.type === 'RANDOM_RING_RESPONSE') {
+          console.log(`[P2P] ⚡ ${enrollmentNo} responded: status=${msg.status}`);
+          // Update student status locally for immediate UI feedback
+          setStudents(prev => prev.map(s =>
+            s.enrollmentNo === enrollmentNo
+              ? { ...s, p2pRingStatus: msg.status, p2pRingVerified: msg.status === 'verified' }
+              : s
+          ));
+          // Send acceptance back to student via P2P so their timer resumes
+          // (no internet needed — this travels back over the same DataChannel)
+          try {
+            dc.send(JSON.stringify({
+              type: 'RANDOM_RING_ACCEPTED',
+              enrollmentNo,
+              status: msg.status,
+            }));
+            console.log(`[P2P] ✅ Sent RANDOM_RING_ACCEPTED back to ${enrollmentNo}`);
+          } catch (e) {
+            console.warn(`[P2P] Failed to send acceptance back to ${enrollmentNo}:`, e.message);
+          }
+          Alert.alert(
+            '✅ P2P Ring Response',
+            `${studentName || enrollmentNo}: ${msg.status === 'verified' ? 'Face Verified ✅' : 'Present 🙋'}`,
+            [{ text: 'OK' }]
+          );
+        } else if (msg.type === 'TIMER_UPDATE') {
+          console.log(`[P2P] ⏱️ Timer update from ${enrollmentNo}: ${msg.timerValue}s`);
+          setStudents(prev => prev.map(s => {
+            if (s.enrollmentNo === enrollmentNo) {
+              return {
+                ...s,
+                timerValue: msg.timerValue,
+                isRunning: msg.isRunning,
+                status: msg.status,
+                receivedViaP2P: true, // FLAG for navy blue color
+                attendanceSession: {
+                  ...(s.attendanceSession || {}),
+                  isRunning: msg.isRunning,
+                  status: msg.status,
+                  attendedSeconds: msg.timerValue,
+                },
+              };
+            }
+            return s;
+          }));
+        }
+      } catch {}
+    };
+
+    // ICE candidates → relay via signaling server
+    pc.onicecandidate = (event) => {
+      if (event.candidate && socketRef.current?.connected) {
+        socketRef.current.emit('webrtc_ice_candidate', {
+          targetSocketId: freshSocketId,
+          candidate: event.candidate
+        });
+      }
+    };
+
+    pc.onconnectionstatechange = () => {
+      console.log(`[P2P] Connection state change for student ${enrollmentNo}: ${pc.connectionState}`);
+      if (pc.connectionState === 'failed' || pc.connectionState === 'disconnected' || pc.connectionState === 'closed') {
+        console.log(`[P2P] Cleaning up connection for student ${enrollmentNo} due to connectionState: ${pc.connectionState}`);
+        
+        // Clean up connection references
+        if (teacherDataChannels.current[enrollmentNo]) {
+          try {
+            teacherDataChannels.current[enrollmentNo].onopen = null;
+            teacherDataChannels.current[enrollmentNo].onclose = null;
+            teacherDataChannels.current[enrollmentNo].onmessage = null;
+            teacherDataChannels.current[enrollmentNo].close();
+          } catch {}
+          delete teacherDataChannels.current[enrollmentNo];
+        }
+        if (teacherRtcConnections.current[enrollmentNo]) {
+          try {
+            teacherRtcConnections.current[enrollmentNo].onicecandidate = null;
+            teacherRtcConnections.current[enrollmentNo].onconnectionstatechange = null;
+            teacherRtcConnections.current[enrollmentNo].close();
+          } catch {}
+          delete teacherRtcConnections.current[enrollmentNo];
+        }
+        
+        setTeacherP2PStatus(prev => ({ ...prev, [enrollmentNo]: 'closed' }));
+        
+        // Update students state to remove P2P indicator
+        setStudents(prev => prev.map(s => 
+          s.enrollmentNo === enrollmentNo 
+            ? { ...s, receivedViaP2P: false } 
+            : s
+        ));
+
+        // Trigger re-prewarming after a short delay to reconnect
+        setTimeout(() => {
+          if (typeof teacherPreWarmP2P === 'function') {
+            console.log(`[P2P] Triggering re-prewarm for student ${enrollmentNo}...`);
+            teacherPreWarmP2P();
+          }
+        }, 5000);
+      }
+    };
+
+    // Create & send offer
+    try {
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+      socketRef.current.emit('webrtc_offer', {
+        targetSocketId: freshSocketId,
+        offer,
+        teacherId: loginId
+      });
+    } catch (err) {
+      console.error('[P2P] Offer failed:', err.message);
+      setTeacherP2PStatus(prev => ({ ...prev, [enrollmentNo]: 'closed' }));
+    }
+  };
+
+  /**
+   * Smart Random Ring — P2P if teacher is on WiFi, else DB ring.
+   * @param {Object} ringData - { type, count } from RandomRingDialog
+   */
+  const handleSmartRandomRing = async (ringData) => {
+    const onWifi = await checkTeacherWifi();
+    const isOnline = socketRef.current?.connected;
+    console.log(`[SmartRing] Teacher WiFi: ${onWifi}, socket: ${isOnline}, type: ${ringData.type}`);
+
+    // Offline or on WiFi → LAN broadcast is primary (works without internet)
+    const canUseLan = onWifi || !isOnline;
+    if (canUseLan) {
+      // When offline, server won't mark students 'active' — use full roster
+      let targets = [...(students || [])].filter(s => s.enrollmentNo);
+      if (isOnline) {
+        const active = targets.filter(s => s.status === 'active' || s.isRunning);
+        if (active.length > 0) targets = active;
+      }
+      if (ringData.type === 'random' && ringData.count && ringData.count < targets.length) {
+        targets = targets.sort(() => Math.random() - 0.5).slice(0, ringData.count);
+      }
+
+      if (!targets.length) {
+        Alert.alert('⚠️ No Students', 'No students in class list. Load students while online first, or check your filter.');
+        return;
+      }
+
+      const ringPayload = {
+        randomRingId: 'p2p_ring_' + Date.now(),
+        teacherId: loginId,
+        timestamp: Date.now(),
+        expiresAt: Date.now() + 60000,
+        isP2P: true,
+      };
+
+      console.log(`[SmartRing] LAN ring → ${targets.length} student(s), offline=${!isOnline}`);
+
+      await initLanP2P('teacher', loginId);
+
+      // Burst broadcast when fully offline — UDP can be dropped on busy WiFi
+      const burstCount = isOnline ? 1 : 5;
+      for (let i = 0; i < burstCount; i++) {
+        await LanP2PService.broadcastReliable('RANDOM_RING_TRIGGER', ringPayload, {
+          targetEnrollmentNos: targets.map(t => t.enrollmentNo),
+          requireAck: false,
+        });
+        if (i < burstCount - 1) {
+          await new Promise(r => setTimeout(r, 400));
+        }
+      }
+
+      Alert.alert(
+        '📶 LAN Ring Sent',
+        `Broadcast ${burstCount}x to ${targets.length} student(s) over Wi-Fi${isOnline ? ' + P2P' : ' (offline mode)'}.`,
+      );
+
+      // WebRTC only when socket still up (needs signaling server)
+      if (isOnline) {
+        await Promise.all(targets.map(async (student) => {
+          const enrollmentNo = student.enrollmentNo;
+          const existingDC = teacherDataChannels.current[enrollmentNo];
+          const sendRing = (dc) => {
+            try {
+              dc.send(JSON.stringify({ type: 'RANDOM_RING_TRIGGER', ...ringPayload }));
+              console.log(`[P2P] 🔔 Ring sent → ${enrollmentNo}`);
+            } catch (e) {
+              console.warn(`[P2P] Failed to send ring to ${enrollmentNo}:`, e.message);
+            }
+          };
+          if (existingDC?.readyState === 'open') {
+            sendRing(existingDC);
+          } else {
+            await teacherEstablishP2P(enrollmentNo, student.name, sendRing);
+          }
+        }));
+
+        const needServer = targets.filter(s => {
+          const dc = teacherDataChannels.current[s.enrollmentNo];
+          return !dc || dc.readyState !== 'open';
+        });
+        if (needServer.length > 0) {
+          try {
+            const response = await fetch(POST_RANDOM_RING, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                type: ringData.type,
+                count: ringData.count,
+                teacherId: loginId,
+                teacherName: userData?.name,
+                semester,
+                branch,
+                targetEnrollmentNos: needServer.map(s => s.enrollmentNo),
+              }),
+            });
+            const result = await response.json();
+            if (result.success) {
+              console.log(`[SmartRing] Server fallback: ${result.selectedStudents?.length || 0} student(s)`);
+            }
+          } catch (e) {
+            console.warn('[SmartRing] Server fallback failed:', e.message);
+          }
+        }
+      }
+      return;
+    }
+
+    // No WiFi at all — cannot LAN ring
+    if (!isOnline) {
+      Alert.alert(
+        '📶 Offline',
+        'Random Ring over LAN requires classroom Wi-Fi. Connect to Wi-Fi and try again.',
+      );
+      return;
+    }
+
+    // Online + no WiFi detection — server DB ring
+      try {
+        const response = await fetch(POST_RANDOM_RING, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            type: ringData.type,
+            count: ringData.count,
+            teacherId: loginId,
+            teacherName: userData?.name,
+            semester,
+            branch
+          })
+        });
+        const result = await response.json();
+        if (result.success) {
+          alert(`✅ Random Ring sent to ${result.selectedStudents?.length || 0} student(s)!`);
+          setActiveRandomRing({
+            _id: result.randomRingId,
+            selectedStudents: result.selectedStudents.map(s => ({
+              studentId: s.id,
+              enrollmentNo: s.enrollmentNo,
+              name: s.name,
+              teacherAction: 'pending',
+              verified: false
+            }))
+          });
+        } else {
+          alert('❌ Failed to send Random Ring: ' + (result.message || result.error));
+        }
+      } catch (error) {
+        alert('❌ Error sending Random Ring. Please check your connection.\n' + error.message);
+      }
+  };
+
+  /**
+   * Pre-warm P2P connections to all currently active students.
+   * Called when teacher joins a class room / on snapshot.
+   */
+  const teacherPreWarmP2P = async (liveStudentList) => {
+    if (selectedRole !== 'teacher') return;
+    const onWifi = await checkTeacherWifi();
+    if (!onWifi) {
+      console.log('[P2P] Teacher not on WiFi — skipping pre-warm');
+      return;
+    }
+    await initLanP2P('teacher', loginId);
+    const active = (liveStudentList || students || []).filter(
+      s => s.status === 'active' || s.isRunning
+    );
+    console.log(`[P2P] Pre-warming ${active.length} connections...`);
+    for (const s of active) {
+      const dc = teacherDataChannels.current[s.enrollmentNo];
+      if (!dc || dc.readyState !== 'open') {
+        // Small stagger to avoid simultaneous ICE floods
+        await new Promise(r => setTimeout(r, 200));
+        teacherEstablishP2P(s.enrollmentNo, s.name);
+      }
+    }
+  };
+
+  // Teacher action handler for random ring accept/reject
+  const handleTeacherAction = async (randomRingId, studentId, action) => {
+
+    try {
+      console.log(`👨‍🏫 Teacher ${action} student`);
+      console.log(`   Random Ring ID: ${randomRingId}`);
+      console.log(`   Student ID: ${studentId}`);
+      console.log(`   Action: ${action}`);
+
+      if (!randomRingId) {
+        console.error('❌ No randomRingId provided');
+        alert('❌ Error: No active random ring found');
+        return;
+      }
+
+      if (!studentId) {
+        console.error('❌ No studentId provided');
+        alert('❌ Error: Student ID not found');
+        return;
+      }
+
+      console.log(POST_RANDOM_RING_TEACHER_ACTION);
+      console.log(`📦 Request body:`, { randomRingId, studentId, action });
+
+      const response = await fetch(POST_RANDOM_RING_TEACHER_ACTION, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          randomRingId,
+          studentId,
+          action
+        })
+      });
+
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+
+      const result = await response.json();
+      console.log(`📥 Server response:`, result);
+
+      if (result.success) {
+        console.log(`✅ Student ${action} successfully`);
+        alert(`✅ Student ${action} successfully`);
+
+        // Update active random ring state
+        setActiveRandomRing(prev => {
+          if (!prev) return prev;
+          return {
+            ...prev,
+            selectedStudents: prev.selectedStudents.map(s =>
+              (s.studentId === studentId || s.enrollmentNo === studentId)
+                ? { ...s, teacherAction: action }
+                : s
+            )
+          };
+        });
+      } else {
+        const errorMsg = result.message || result.error || 'Unknown error';
+        console.error(`❌ Server error: ${errorMsg}`);
+        alert(`❌ Failed to ${action} student: ${errorMsg}`);
+      }
+    } catch (error) {
+      console.error(`❌ Error ${action} student:`, error);
+      alert(`❌ Error ${action}ed student. Please check your connection.\n\nDetails: ${error.message}`);
+      throw error; // Re-throw so the button handler can catch it
+    }
+  };
+
+  // Show ViewRecords screen (full screen overlay)
+  if (selectedRole === 'teacher' && showViewRecords) {
+    return (
+      <View style={{ flex: 1 }}>
+        <ViewRecords
+          onBack={() => setShowViewRecords(false)}
+          theme={theme}
+        />
+        <ToastContainer />
+      </View>
+    );
+  }
+
+  // Show Notifications screen
+  if (selectedRole === 'teacher' && showNotification) {
+    return (
+      <View style={{ flex: 1 }}>
+        <Notifications
+          onBack={() => setShowNotification(false)}
+          theme={theme}
+          teacherId={userData?.employeeId}
+        />
+        <ToastContainer />
+      </View>
+    );
+  }
+
+  // Show Updates screen
+  if (selectedRole === 'teacher' && showUpdates) {
+    return (
+      <View style={{ flex: 1 }}>
+        <Updates
+          onBack={() => setShowUpdates(false)}
+          theme={theme}
+        />
+        <ToastContainer />
+      </View>
+    );
+  }
+
+  // Show Help and Support screen
+  if (selectedRole === 'teacher' && showHelpAndSupport) {
+    return (
+      <View style={{ flex: 1 }}>
+        <HelpAndSupport
+          onBack={() => setShowHelpAndSupport(false)}
+          theme={theme}
+        />
+        <ToastContainer />
+      </View>
+    );
+  }
+
+  // Show Feedback screen
+  if (selectedRole === 'teacher' && showFeedback) {
+    return (
+      <View style={{ flex: 1 }}>
+        <Feedback
+          onBack={() => setShowFeedback(false)}
+          theme={theme}
+        />
+        <ToastContainer />
+      </View>
+    );
+  }
+
+  // Teacher Dashboard - NEW UI
+  if (selectedRole === 'teacher' && activeTab === 'home') {
+    return (
+      <View style={{ flex: 1, backgroundColor: theme.background }}>
+        <StatusBar style={theme.statusBar} />
+        <TeacherHeader
+          userData={userData}
+          isDark={isDarkTheme}
+          onToggleTheme={toggleTheme}
+          theme={theme}
+          onViewRecords={() => setShowViewRecords(true)}
+          onNotification={() => setShowNotification(true)}
+          onUpdates={() => setShowUpdates(true)}
+          onHelpAndSupport={() => setShowHelpAndSupport(true)}
+          onFeedback={() => setShowFeedback(true)}
+          onLogout={handleLogout}
+          onApplyLeave={() => setShowApplyLeaveModal(true)}
+        />
+        {/* Current Lecture / Manual Selection Banner */}
+        {currentClassInfo && (
+          <View style={styles.bannerWrapper}>
+            <View style={[styles.bannerContainer, { 
+              backgroundColor: theme.cardBackground,
+              borderColor: currentClassInfo.isManual ? theme.primary + '40' : theme.border,
+            }]}>
+              <View style={styles.bannerInfo}>
+                <View style={[styles.bannerIndicator, { backgroundColor: currentClassInfo.isManual ? theme.primary : '#10b981' }]} />
+                <View style={{ flex: 1 }}>
+                  <Text style={[styles.bannerLabel, { color: theme.textSecondary }]}>
+                    {currentClassInfo.isManual ? '📌 Manual Selection' : '📚 Current Lecture'}
+                  </Text>
+                  <Text style={[styles.bannerTitle, { color: theme.text }]} numberOfLines={1}>
+                    {getDisplaySubject()}
+                  </Text>
+                  <Text style={[styles.bannerSubtext, { color: theme.textSecondary }]}>
+                    {getDisplaySubtext()}
+                  </Text>
+                </View>
+                <TouchableOpacity
+                  onPress={() => setShowSemesterSelector(true)}
+                  style={[styles.bannerButton, { backgroundColor: theme.primary }]}
+                  activeOpacity={0.8}
+                >
+                  <Text style={styles.bannerButtonText}>Change</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          </View>
+        )}
+
+        {/* Set Class Button */}
+        {currentClassInfo && (
+          <View style={styles.setClassBtnWrapper}>
+            <TouchableOpacity 
+              style={[styles.setClassBtn, { backgroundColor: '#10b981' + '15', borderColor: '#10b981' + '40' }]} 
+              onPress={() => {
+                const autoPer = getAutoTrackedPeriod();
+                setTempPeriod(assignedPeriod || autoPer);
+                setTempManualSet(isPeriodManuallySet);
+                setTempRoom(assignedRoom || getTimetableRoomForPeriod(assignedPeriod || autoPer));
+                setShowPeriodSelector(false);
+                setIsRoomDropdownExpanded(false);
+                setShowClassSetupModal(true);
+              }}
+              activeOpacity={0.8}
+            >
+              <View style={styles.setClassBtnContent}>
+                <Text style={{ fontSize: 16, marginRight: 6 }}>🏫</Text>
+                <Text style={[styles.setClassBtnText, { color: '#059669' }]}>Set Class</Text>
+              </View>
+            </TouchableOpacity>
+          </View>
+        )}
+
+        {/* Semester Selector Button (when no lecture) */}
+        {!currentClassInfo && (
+          <View style={styles.emptyBannerWrapper}>
+            <TouchableOpacity
+              onPress={() => setShowSemesterSelector(true)}
+              style={[styles.emptyBannerContainer, { backgroundColor: theme.cardBackground, borderColor: theme.border }]}
+              activeOpacity={0.8}
+            >
+              <View style={[styles.emptyBannerIcon, { backgroundColor: theme.primary + '15' }]}>
+                <Text style={{ fontSize: 24 }}>📚</Text>
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={[styles.emptyBannerTitle, { color: theme.text }]}>No Class Selected</Text>
+                <Text style={[styles.emptyBannerSubtext, { color: theme.textSecondary }]}>Tap to select a semester and branch manually</Text>
+              </View>
+              <Text style={{ color: theme.primary, fontSize: 20, fontWeight: 'bold' }}>→</Text>
+            </TouchableOpacity>
+          </View>
+        )}
+
+          <StudentList
+            theme={theme}
+            students={students}
+            onStudentPress={(student) => {
+              setSelectedStudent(student);
+              fetchStudentDetails(student);
+            }}
+            activeRandomRing={activeRandomRing}
+            onTeacherAction={handleTeacherAction}
+            onManualMark={handleManualMark}
+            currentClassInfo={currentClassInfo}
+            onTriggerDropdown={() => setShowSemesterSelector(true)}
+            refreshControl={
+              <RefreshControl
+                refreshing={refreshingTeacher}
+                onRefresh={onRefreshTeacher}
+                colors={[theme.primary]}
+                tintColor={theme.primary}
+              />
+            }
+          />
+        {/* Theme Picker Modal */}
+        <Modal
+          visible={showThemePicker}
+          transparent
+          animationType="slide"
+          onRequestClose={() => setShowThemePicker(false)}
+        >
+          <TouchableOpacity
+            style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'flex-end' }}
+            activeOpacity={1}
+            onPress={() => setShowThemePicker(false)}
+          >
+            <View style={{ backgroundColor: theme.cardBackground, borderTopLeftRadius: 24, borderTopRightRadius: 24, padding: 20, paddingBottom: 40 }}
+              onStartShouldSetResponder={() => true}
+            >
+              <Text style={{ color: theme.text, fontSize: 18, fontWeight: 'bold', marginBottom: 4 }}>🎨 Choose Theme</Text>
+              <Text style={{ color: theme.textSecondary, fontSize: 12, marginBottom: 16 }}>Pick a look that feels right</Text>
+              <ScrollView showsVerticalScrollIndicator={false} style={{ maxHeight: 420 }}>
+                {THEME_GROUPS.map((group) => (
+                  <View key={group.label} style={{ marginBottom: 16 }}>
+                    <Text style={{ color: theme.textSecondary, fontSize: 11, fontWeight: '700', letterSpacing: 1, marginBottom: 8, textTransform: 'uppercase' }}>
+                      {group.label}
+                    </Text>
+                    <View style={{ flexDirection: 'row', gap: 10 }}>
+                      {group.keys.map((key) => {
+                        const t = THEMES[key];
+                        const isActive = themeMode === key;
+                        return (
+                          <TouchableOpacity
+                            key={key}
+                            onPress={() => selectTheme(key)}
+                            style={{ flex: 1, borderRadius: 14, overflow: 'hidden', borderWidth: isActive ? 2 : 1, borderColor: isActive ? t.primary : t.border }}
+                          >
+                            <View style={{ backgroundColor: t.background, padding: 8, alignItems: 'center' }}>
+                              <View style={{ width: '100%', backgroundColor: t.cardBackground, borderRadius: 6, padding: 5, marginBottom: 5, borderWidth: 1, borderColor: t.border }}>
+                                <View style={{ width: '65%', height: 5, backgroundColor: t.primary, borderRadius: 3, marginBottom: 3 }} />
+                                <View style={{ width: '45%', height: 3, backgroundColor: t.textSecondary, borderRadius: 2 }} />
+                              </View>
+                              <Text style={{ fontSize: 18 }}>{t.emoji}</Text>
+                            </View>
+                            <View style={{ backgroundColor: t.cardBackground, paddingVertical: 6, paddingHorizontal: 4, alignItems: 'center' }}>
+                              <Text style={{ color: t.text, fontSize: 10, fontWeight: '600', textAlign: 'center' }} numberOfLines={1}>{t.label}</Text>
+                              {isActive && <Text style={{ color: t.primary, fontSize: 9, marginTop: 1 }}>✓ Active</Text>}
+                            </View>
+                          </TouchableOpacity>
+                        );
+                      })}
+                    </View>
+                  </View>
+                ))}
+              </ScrollView>
+            </View>
+          </TouchableOpacity>
+        </Modal>
+        <BottomNavigation
+          activeTab={activeTab}
+          onTabChange={setActiveTab}
+          theme={theme}
+          userRole="teacher"
+        />
+        {/* Floating Random Ring Button — shows WiFi dot when P2P is available */}
+        <TouchableOpacity
+          style={{
+            position: 'absolute',
+            bottom: 90,
+            right: 24,
+            width: 56,
+            height: 56,
+            borderRadius: 28,
+            backgroundColor: theme.primary,
+            justifyContent: 'center',
+            alignItems: 'center',
+            elevation: 8,
+            shadowColor: '#000',
+            shadowOffset: { width: 0, height: 4 },
+            shadowOpacity: 0.3,
+            shadowRadius: 8,
+          }}
+          onPress={() => {
+            const isBreak = currentClassInfo?.subject === 'Break Time' || currentClassInfo?.subject === 'Break';
+            if (!currentClassInfo || isBreak) {
+              Alert.alert(
+                '🔔 Random Ring Restricted',
+                isBreak
+                  ? 'Random Ring notifications cannot be sent during break times.'
+                  : 'Random Ring notifications can only be sent during an active class period.',
+                [{ text: 'OK' }]
+              );
+              return;
+            }
+            // Check WiFi state and refresh indicator before opening dialog
+            checkTeacherWifi();
+            setRandomRingDialogOpen(true);
+          }}
+        >
+          <Text style={{ fontSize: 24 }}>🔔</Text>
+          {/* WiFi P2P indicator dot */}
+          {teacherIsOnWifi && (
+            <View style={{
+              position: 'absolute',
+              top: 4,
+              right: 4,
+              width: 10,
+              height: 10,
+              borderRadius: 5,
+              backgroundColor: '#10b981',
+              borderWidth: 1.5,
+              borderColor: '#fff',
+            }} />
+          )}
+        </TouchableOpacity>
+        {/* Random Ring Dialog — delegates to smart ring handler */}
+        <RandomRingDialog
+          visible={randomRingDialogOpen}
+          onClose={() => setRandomRingDialogOpen(false)}
+          onConfirm={async (data) => {
+            setRandomRingDialogOpen(false);
+            await handleSmartRandomRing(data);
+          }}
+          theme={theme}
+          isP2PAvailable={teacherIsOnWifi}
+        />
+        {/* Student Profile Dialog */}
+        <StudentProfileDialog
+          visible={!!selectedStudent}
+          onClose={() => setSelectedStudent(null)}
+          theme={theme}
+          student={selectedStudent}
+        />
+        {/* Teacher Profile Dialog */}
+        <TeacherProfileDialog
+          visible={showProfile}
+          onClose={() => setShowProfile(false)}
+          theme={theme}
+          teacherData={userData}
+          onLogout={handleLogout}
+        />
+        {/* Class Details Setup Modal */}
+        <Modal
+          visible={showClassSetupModal}
+          transparent={true}
+          animationType="fade"
+          onRequestClose={() => setShowClassSetupModal(false)}
+        >
+          <View style={styles.modalOverlay}>
+            <View style={[styles.classSetupContainer, { backgroundColor: theme.cardBackground }]}>
+              {/* Header */}
+              <View style={styles.modalHeader}>
+                <Text style={[styles.modalTitle, { color: theme.text }]}>Classroom Setup</Text>
+                <TouchableOpacity onPress={() => setShowClassSetupModal(false)} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
+                  <Text style={{ fontSize: 20, color: theme.textSecondary }}>✕</Text>
+                </TouchableOpacity>
+              </View>
+
+              {/* Main Content scrollable to avoid keyboard overlapping */}
+              <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 16 }}>
+                {/* Period Section */}
+                <Text style={[styles.sectionLabel, { color: theme.textSecondary }]}>Period Selection</Text>
+                
+                {/* Auto-track vs Manual Switcher */}
+                <View style={[styles.switcherContainer, { backgroundColor: theme.background }]}>
+                  <TouchableOpacity 
+                    style={[styles.switcherButton, !tempManualSet && [styles.switcherActive, { backgroundColor: theme.primary }]]}
+                    onPress={() => {
+                      setTempManualSet(false);
+                      const autoPer = getAutoTrackedPeriod();
+                      setTempPeriod(autoPer);
+                      setTempRoom(getTimetableRoomForPeriod(autoPer));
+                    }}
+                  >
+                    <Text style={[styles.switcherText, { color: !tempManualSet ? '#ffffff' : theme.textSecondary }]}>Auto-Tracked</Text>
+                  </TouchableOpacity>
+                  
+                  <TouchableOpacity 
+                    style={[styles.switcherButton, tempManualSet && [styles.switcherActive, { backgroundColor: theme.primary }]]}
+                    onPress={() => setTempManualSet(true)}
+                  >
+                    <Text style={[styles.switcherText, { color: tempManualSet ? '#ffffff' : theme.textSecondary }]}>Manually Set</Text>
+                  </TouchableOpacity>
+                </View>
+
+                {/* Period Number Display/Selector */}
+                <View style={styles.periodSelectRow}>
+                  <Text style={[styles.periodValueText, { color: theme.text }]}>
+                    Period {tempPeriod}
+                  </Text>
+
+                  {tempManualSet ? (
+                    <TouchableOpacity 
+                      style={[styles.dropdownTrigger, { borderColor: theme.border, backgroundColor: theme.background }]}
+                      onPress={() => setShowPeriodSelector(!showPeriodSelector)}
+                    >
+                      <Text style={{ color: theme.text }}>Change Period ▾</Text>
+                    </TouchableOpacity>
+                  ) : (
+                    <Text style={[styles.autoPeriodBadge, { color: theme.primary, backgroundColor: theme.primary + '15' }]}>
+                      Auto Mode
+                    </Text>
+                  )}
+                </View>
+
+                {/* Period Manual Selection Grid */}
+                {tempManualSet && showPeriodSelector && (
+                  <View style={[styles.periodGrid, { borderColor: theme.border }]}>
+                    {[1, 2, 3, 4, 5, 6, 7].map((num) => (
+                      <TouchableOpacity
+                        key={num}
+                        style={[
+                          styles.periodGridItem,
+                          { borderColor: theme.border },
+                          tempPeriod === num && { backgroundColor: theme.primary, borderColor: theme.primary }
+                        ]}
+                        onPress={() => {
+                          setTempPeriod(num);
+                          setTempRoom(getTimetableRoomForPeriod(num));
+                          setShowPeriodSelector(false);
+                        }}
+                      >
+                        <Text style={{ color: tempPeriod === num ? '#ffffff' : theme.text, fontWeight: '600' }}>
+                          P{num}
+                        </Text>
+                      </TouchableOpacity>
+                    ))}
+                  </View>
+                )}
+
+                {/* Room Section */}
+                <Text style={[styles.sectionLabel, { color: theme.textSecondary, marginTop: 20 }]}>Classroom Room</Text>
+                
+                <TouchableOpacity 
+                  style={[styles.roomDropdownTrigger, { borderColor: theme.border, backgroundColor: theme.background }]}
+                  onPress={() => setIsRoomDropdownExpanded(!isRoomDropdownExpanded)}
+                >
+                  <Text style={{ color: theme.text, fontSize: 16 }}>{tempRoom}</Text>
+                  <Text style={{ color: theme.textSecondary, fontSize: 14 }}>▾</Text>
+                </TouchableOpacity>
+
+                {/* Room Options Dropdown List */}
+                {isRoomDropdownExpanded && (
+                  <View style={[styles.roomDropdownList, { borderColor: theme.border, backgroundColor: theme.cardBackground }]}>
+                    {getPaginatedClassrooms().map((roomOpt) => (
+                      <TouchableOpacity
+                        key={roomOpt}
+                        style={[
+                          styles.roomDropdownItem,
+                          { borderBottomColor: theme.border + '30' },
+                          tempRoom === roomOpt && { backgroundColor: theme.primary + '10' }
+                        ]}
+                        onPress={() => {
+                          setTempRoom(roomOpt);
+                          setIsRoomDropdownExpanded(false);
+                        }}
+                      >
+                        <Text style={{ color: tempRoom === roomOpt ? theme.primary : theme.text, fontWeight: tempRoom === roomOpt ? '600' : '400' }}>
+                          {roomOpt}
+                        </Text>
+                      </TouchableOpacity>
+                    ))}
+                    {/* Pagination Controls */}
+                    {getTotalClassroomPages() > 1 && (
+                      <View style={[styles.paginationRow, { borderTopColor: theme.border + '30' }]}>
+                        <TouchableOpacity
+                          style={[styles.pageBtn, classroomsPage === 0 && styles.pageBtnDisabled]}
+                          onPress={() => setClassroomsPage(prev => Math.max(0, prev - 1))}
+                          disabled={classroomsPage === 0}
+                        >
+                          <Text style={[styles.pageBtnText, { color: classroomsPage === 0 ? theme.textSecondary + '40' : theme.primary }]}>
+                            ◀ Prev
+                          </Text>
+                        </TouchableOpacity>
+
+                        <Text style={[styles.pageInfoText, { color: theme.text }]}>
+                          {classroomsPage + 1} / {getTotalClassroomPages()}
+                        </Text>
+
+                        <TouchableOpacity
+                          style={[styles.pageBtn, classroomsPage >= getTotalClassroomPages() - 1 && styles.pageBtnDisabled]}
+                          onPress={() => setClassroomsPage(prev => Math.min(getTotalClassroomPages() - 1, prev + 1))}
+                          disabled={classroomsPage >= getTotalClassroomPages() - 1}
+                        >
+                          <Text style={[styles.pageBtnText, { color: classroomsPage >= getTotalClassroomPages() - 1 ? theme.textSecondary + '40' : theme.primary }]}>
+                            Next ▶
+                          </Text>
+                        </TouchableOpacity>
+                      </View>
+                    )}
+                  </View>
+                )}
+              </ScrollView>
+
+              {/* Action Buttons */}
+              <View style={styles.modalActions}>
+                <TouchableOpacity 
+                  style={[styles.cancelBtn, { borderColor: theme.border }]} 
+                  onPress={() => setShowClassSetupModal(false)}
+                >
+                  <Text style={{ color: theme.textSecondary, fontWeight: '600' }}>Cancel</Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity 
+                  style={[styles.saveBtn, { backgroundColor: theme.primary }]} 
+                  onPress={handleSaveClassSetup}
+                >
+                  <Text style={{ color: '#ffffff', fontWeight: '600' }}>Save Settings</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          </View>
+        </Modal>
+        {/* Semester Selector - Only for Teachers */}
+        {selectedRole === 'teacher' && (
+          <SemesterSelector
+            visible={showSemesterSelector}
+            onClose={() => setShowSemesterSelector(false)}
+            isStudent={false}
+            onSelect={(selection) => {
+              setManualSelection(selection);
+
+              // Update global semester/branch for manual selection
+              if (selection.semester !== 'auto') {
+                console.log(`📝 Manual selection: ${selection.branch} Semester ${selection.semester}`);
+                setSemester(selection.semester);
+                setBranch(selection.branch);
+                // Clear previous manual details when changing semesters/branches
+                setAssignedRoom(null);
+                setAssignedPeriod(null);
+                setIsPeriodManuallySet(false);
+                AsyncStorage.removeItem('@assigned_room').catch(() => {});
+                AsyncStorage.removeItem('@assigned_period').catch(() => {});
+                AsyncStorage.removeItem('@is_period_manually_set').catch(() => {});
+
+                // Persist so it survives app restarts
+                AsyncStorage.setItem(SEMESTER_KEY, selection.semester).catch(() => {});
+                AsyncStorage.setItem(BRANCH_KEY, selection.branch).catch(() => {});
+                setCurrentClassInfo({
+                  subject: 'Manual Selection (Assign Classroom)',
+                  branch: selection.branch,
+                  semester: selection.semester,
+                  isManual: true
+                });
+                // Immediately fetch students for the selected class
+                fetchStudents(selection);
+              } else {
+                console.log(`🔄 Switched to auto mode - will use current class from timetable`);
+                setSemester(null);
+                setBranch(null);
+                setAssignedRoom(null);
+                setAssignedPeriod(null);
+                setIsPeriodManuallySet(false);
+                AsyncStorage.removeItem('@assigned_room').catch(() => {});
+                AsyncStorage.removeItem('@assigned_period').catch(() => {});
+                AsyncStorage.removeItem('@is_period_manually_set').catch(() => {});
+
+                // Clear persisted manual selection when switching back to auto
+                AsyncStorage.removeItem(SEMESTER_KEY).catch(() => {});
+                AsyncStorage.removeItem(BRANCH_KEY).catch(() => {});
+                setCurrentClassInfo(null);
+                fetchStudents({ semester: 'auto', branch: null });
+              }
+            }}
+            currentSelection={manualSelection}
+            theme={theme}
+          />
+        )}
+        {/* Offline Toast Message */}
+        {isOffline && (
+          <Animated.View style={{
+            position: 'absolute',
+            bottom: 100,
+            left: 20,
+            right: 20,
+            backgroundColor: '#ef4444',
+            padding: 16,
+            borderRadius: 12,
+            flexDirection: 'row',
+            alignItems: 'center',
+            gap: 12,
+            elevation: 10,
+            shadowColor: '#000',
+            shadowOffset: { width: 0, height: 4 },
+            shadowOpacity: 0.3,
+            shadowRadius: 8,
+          }}>
+            <Text style={{ fontSize: 24 }}>📡</Text>
+            <View style={{ flex: 1 }}>
+              <Text style={{ color: '#fff', fontWeight: 'bold', fontSize: 14 }}>
+                App is offline
+              </Text>
+              <Text style={{ color: '#fff', fontSize: 12, marginTop: 2 }}>
+                Check your internet connection
+              </Text>
+            </View>
+          </Animated.View>
+        )}
+
+        {/* Apply Leave Modal */}
+        <Modal
+          visible={showApplyLeaveModal}
+          transparent
+          animationType="slide"
+          onRequestClose={() => setShowApplyLeaveModal(false)}
+        >
+          <View style={{
+            flex: 1,
+            backgroundColor: 'rgba(0,0,0,0.6)',
+            justifyContent: 'center',
+            alignItems: 'center',
+            padding: 20
+          }}>
+            <View style={{
+              backgroundColor: theme.cardBackground,
+              width: '100%',
+              maxWidth: 400,
+              borderRadius: 16,
+              padding: 24,
+              borderWidth: 1,
+              borderColor: theme.border,
+              shadowColor: '#000',
+              shadowOffset: { width: 0, height: 10 },
+              shadowOpacity: 0.3,
+              shadowRadius: 20,
+              elevation: 10
+            }}>
+              <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
+                <Text style={{ fontSize: 20, fontWeight: 'bold', color: theme.text }}>📅 Apply for Leave</Text>
+                <TouchableOpacity onPress={() => setShowApplyLeaveModal(false)}>
+                  <Text style={{ fontSize: 22, color: theme.textSecondary }}>✕</Text>
+                </TouchableOpacity>
+              </View>
+
+              <Text style={{ color: theme.textSecondary, fontSize: 13, marginBottom: 8, fontWeight: '600' }}>START DATE (YYYY-MM-DD)</Text>
+              <TextInput
+                style={{
+                  backgroundColor: theme.background,
+                  color: theme.text,
+                  borderWidth: 1,
+                  borderColor: theme.border,
+                  borderRadius: 8,
+                  padding: 12,
+                  marginBottom: 16,
+                  fontSize: 15
+                }}
+                value={leaveStartDate}
+                onChangeText={setLeaveStartDate}
+                placeholder="YYYY-MM-DD"
+                placeholderTextColor={theme.textSecondary + '80'}
+              />
+
+              <Text style={{ color: theme.textSecondary, fontSize: 13, marginBottom: 8, fontWeight: '600' }}>END DATE (YYYY-MM-DD)</Text>
+              <TextInput
+                style={{
+                  backgroundColor: theme.background,
+                  color: theme.text,
+                  borderWidth: 1,
+                  borderColor: theme.border,
+                  borderRadius: 8,
+                  padding: 12,
+                  marginBottom: 16,
+                  fontSize: 15
+                }}
+                value={leaveEndDate}
+                onChangeText={setLeaveEndDate}
+                placeholder="YYYY-MM-DD"
+                placeholderTextColor={theme.textSecondary + '80'}
+              />
+
+              <Text style={{ color: theme.textSecondary, fontSize: 13, marginBottom: 8, fontWeight: '600' }}>REASON (OPTIONAL)</Text>
+              <TextInput
+                style={{
+                  backgroundColor: theme.background,
+                  color: theme.text,
+                  borderWidth: 1,
+                  borderColor: theme.border,
+                  borderRadius: 8,
+                  padding: 12,
+                  marginBottom: 20,
+                  fontSize: 15,
+                  height: 80,
+                  textAlignVertical: 'top'
+                }}
+                value={leaveReason}
+                onChangeText={setLeaveReason}
+                placeholder="E.g., Medical leave, Personal work..."
+                placeholderTextColor={theme.textSecondary + '80'}
+                multiline
+              />
+
+              <View style={{ flexDirection: 'row', gap: 12 }}>
+                <TouchableOpacity
+                  style={{
+                    flex: 1,
+                    paddingVertical: 12,
+                    borderRadius: 8,
+                    borderWidth: 1,
+                    borderColor: theme.border,
+                    alignItems: 'center'
+                  }}
+                  onPress={() => setShowApplyLeaveModal(false)}
+                >
+                  <Text style={{ color: theme.textSecondary, fontWeight: 'bold' }}>Cancel</Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={{
+                    flex: 2,
+                    backgroundColor: theme.primary,
+                    paddingVertical: 12,
+                    borderRadius: 8,
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    flexDirection: 'row',
+                    gap: 8
+                  }}
+                  onPress={handleApplyLeaveSubmit}
+                  disabled={submittingLeave}
+                >
+                  {submittingLeave ? (
+                    <ActivityIndicator size="small" color="#fff" />
+                  ) : (
+                    <Text style={{ color: '#fff', fontWeight: 'bold' }}>Submit Leave</Text>
+                  )}
+                </TouchableOpacity>
+              </View>
+            </View>
+          </View>
+        </Modal>
+
+        <ToastContainer />
+      </View>
+    );
+  }
+
+  // Teacher Calendar Screen
+  if (selectedRole === 'teacher' && activeTab === 'calendar') {
+    return (
+      <View style={{ flex: 1, backgroundColor: theme.background }}>
+        <StatusBar style={theme.statusBar} />
+        <CalendarScreen
+          theme={theme}
+          semester={semester}
+          branch={branch}
+          socketUrl={SOCKET_URL}
+          isTeacher={true}
+        />
+        <BottomNavigation
+          activeTab={activeTab}
+          onTabChange={setActiveTab}
+          theme={theme}
+          userRole="teacher"
+        />
+        <ToastContainer />
+      </View>
+    );
+  }
+
+  // Teacher Timetable Screen
+  if (selectedRole === 'teacher' && activeTab === 'timetable') {
+    // Use semester/branch from state, fall back to manualSelection so timetable
+    // is visible even when no active class is detected
+    const timetableSemester = semester || (manualSelection.semester !== 'auto' ? manualSelection.semester : null);
+    const timetableBranch   = branch  || manualSelection.branch || null;
+    return (
+      <View style={{ flex: 1, backgroundColor: theme.background }}>
+        <StatusBar style={theme.statusBar} />
+        <TimetableScreen
+          theme={theme}
+          semester={timetableSemester}
+          branch={timetableBranch}
+          socketUrl={SOCKET_URL}
+          canEdit={userData?.canEditTimetable || false}
+          isTeacher={true}
+          userData={userData}
+          loginId={loggedInUserId}
+          onLogout={handleLogout}
+        />
+        <BottomNavigation
+          activeTab={activeTab}
+          onTabChange={setActiveTab}
+          theme={theme}
+          userRole="teacher"
+        />
+        <ToastContainer />
+      </View>
+    );
+  }
+
+  // Teacher Dashboard - Old UI (fallback)
+  if (selectedRole === 'teacher') {
+    const teacherConfig = config?.teacherScreen || getDefaultConfig().teacherScreen;
+    const canEditTimetable = userData?.canEditTimetable || false;
+
+    // Calculate statistics with safety checks
+    const totalStudents = students.length;
+    const presentStudents = students.filter(s => s && s.status === 'present').length;
+    const attendingStudents = students.filter(s => s && s.status === 'attending').length;
+    const absentStudents = students.filter(s => s && s.status === 'absent').length;
+    const attendancePercentage = totalStudents > 0 ? Math.round((presentStudents / totalStudents) * 100) : 0;
+
+    return (
+      <View style={{ flex: 1, backgroundColor: theme.background }}>
+        <StatusBar style={theme.statusBar} />
+
+        <ScrollView
+          style={{ flex: 1 }}
+          contentContainerStyle={{ paddingBottom: 20 }}
+          showsVerticalScrollIndicator={false}
+        >
+          {/* Compact Header */}
+          <View style={{
+            backgroundColor: theme.primary,
+            paddingTop: 50,
+            paddingBottom: 20,
+            paddingHorizontal: 20,
+            borderBottomLeftRadius: 24,
+            borderBottomRightRadius: 24,
+          }}>
+            <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 15 }}>
+              <TouchableOpacity onPress={() => setShowProfile(true)} activeOpacity={0.8}>
+                <View style={{
+                  width: 50,
+                  height: 50,
+                  borderRadius: 25,
+                  backgroundColor: '#fff',
+                  justifyContent: 'center',
+                  alignItems: 'center',
+                  borderWidth: 2,
+                  borderColor: '#fff',
+                  overflow: 'hidden',
+                }}>
+                  {userData?.photoUrl ? (
+                    <Image
+                      source={{ uri: userData.photoUrl }}
+                      style={{ width: '100%', height: '100%' }}
+                      resizeMode="cover"
+                    />
+                  ) : (
+                    <Text style={{ fontSize: 20, color: theme.primary, fontWeight: 'bold' }}>
+                      {getInitials(userData?.name || 'Teacher')}
+                    </Text>
+                  )}
+                </View>
+              </TouchableOpacity>
+              <View style={{ flex: 1, marginLeft: 12 }}>
+                <Text style={{ fontSize: 18, fontWeight: 'bold', color: '#fff' }}>
+                  {userData?.name || 'Teacher'}
+                </Text>
+                <Text style={{ fontSize: 13, color: '#fff', opacity: 0.9, marginTop: 2 }}>
+                  {userData?.department || ''} Department
+                </Text>
+              </View>
+              <TouchableOpacity onPress={toggleTheme} style={{ padding: 8 }}>
+                <Text style={{ fontSize: 20 }}>
+                  {THEMES[themeMode]?.emoji || '🎨'}
+                </Text>
+              </TouchableOpacity>
+            </View>
+
+            {/* Stats Grid - 2x2 */}
+            <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 10 }}>
+              <View style={{
+                flex: 1,
+                minWidth: '47%',
+                backgroundColor: 'rgba(255,255,255,0.2)',
+                borderRadius: 12,
+                padding: 16,
+                alignItems: 'center',
+              }}>
+                <Text style={{ fontSize: 32, fontWeight: 'bold', color: '#fff' }}>{totalStudents}</Text>
+                <Text style={{ fontSize: 12, color: '#fff', opacity: 0.9, marginTop: 4 }}>Total</Text>
+              </View>
+              <View style={{
+                flex: 1,
+                minWidth: '47%',
+                backgroundColor: 'rgba(0,255,136,0.2)',
+                borderRadius: 12,
+                padding: 16,
+                alignItems: 'center',
+                borderWidth: 1,
+                borderColor: 'rgba(0,255,136,0.3)',
+              }}>
+                <Text style={{ fontSize: 32, fontWeight: 'bold', color: '#00ff88' }}>{presentStudents}</Text>
+                <Text style={{ fontSize: 12, color: '#fff', opacity: 0.9, marginTop: 4 }}>Present</Text>
+              </View>
+              <View style={{
+                flex: 1,
+                minWidth: '47%',
+                backgroundColor: 'rgba(255,170,0,0.2)',
+                borderRadius: 12,
+                padding: 16,
+                alignItems: 'center',
+                borderWidth: 1,
+                borderColor: 'rgba(255,170,0,0.3)',
+              }}>
+                <Text style={{ fontSize: 32, fontWeight: 'bold', color: '#ffaa00' }}>{attendingStudents}</Text>
+                <Text style={{ fontSize: 12, color: '#fff', opacity: 0.9, marginTop: 4 }}>Active</Text>
+              </View>
+              <View style={{
+                flex: 1,
+                minWidth: '47%',
+                backgroundColor: 'rgba(255,68,68,0.2)',
+                borderRadius: 12,
+                padding: 16,
+                alignItems: 'center',
+                borderWidth: 1,
+                borderColor: 'rgba(255,68,68,0.3)',
+              }}>
+                <Text style={{ fontSize: 32, fontWeight: 'bold', color: '#ff4444' }}>{absentStudents}</Text>
+                <Text style={{ fontSize: 12, color: '#fff', opacity: 0.9, marginTop: 4 }}>Absent</Text>
+              </View>
+            </View>
+          </View>
+
+          {/* Quick Actions Row */}
+          <View style={{ flexDirection: 'row', paddingHorizontal: 20, paddingTop: 20, gap: 12 }}>
+            <TouchableOpacity
+              onPress={() => setActiveTab('timetable')}
+              activeOpacity={0.8}
+              style={{ flex: 1 }}
+            >
+              <View style={{
+                backgroundColor: theme.cardBackground,
+                borderRadius: 12,
+                padding: 16,
+                alignItems: 'center',
+                borderWidth: 2,
+                borderColor: theme.primary,
+              }}>
+                <Text style={{ fontSize: 24, marginBottom: 4 }}>📅</Text>
+                <Text style={{ color: theme.text, fontSize: 13, fontWeight: '600', textAlign: 'center' }}>
+                  {canEditTimetable ? 'Manage' : 'View'}
+                </Text>
+                <Text style={{ color: theme.text, fontSize: 13, fontWeight: '600', textAlign: 'center' }}>
+                  Timetable
+                </Text>
+              </View>
+            </TouchableOpacity>
+
+            {totalStudents > 0 && (
+              <View style={{
+                flex: 1,
+                backgroundColor: theme.cardBackground,
+                borderRadius: 12,
+                padding: 16,
+                alignItems: 'center',
+                justifyContent: 'center',
+                borderWidth: 2,
+                borderColor: theme.border,
+              }}>
+                <Text style={{ fontSize: 28, fontWeight: 'bold', color: theme.primary }}>
+                  {attendancePercentage}%
+                </Text>
+                <Text style={{ color: theme.textSecondary, fontSize: 12, marginTop: 4 }}>
+                  Attendance
+                </Text>
+              </View>
+            )}
+          </View>
+
+          {/* Student List */}
+          <View style={{ paddingHorizontal: 20, marginTop: 20 }}>
+            <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+              <Text style={{ fontSize: 18, fontWeight: 'bold', color: theme.text }}>
+                📋 Live Attendance
+              </Text>
+              <Text style={{ fontSize: 12, color: theme.textSecondary }}>
+                {students.length} student{students.length !== 1 ? 's' : ''}
+              </Text>
+            </View>
+            {students.map((student) => {
+              if (!student || !student._id) return null;
+
+              const studentStatus = student.status || 'absent';
+              const statusIcon = studentStatus === 'present' ? '✅' :
+                studentStatus === 'attending' ? '⏱️' : '❌';
+              const statusColor = teacherConfig?.statusColors?.[studentStatus] || '#00d9ff';
+
+              return (
+                <TouchableOpacity
+                  key={student._id}
+                  onPress={() => fetchStudentDetails(student)}
+                  activeOpacity={0.7}
+                  style={{ marginBottom: 12 }}
+                >
+                  <View style={{
+                    backgroundColor: theme.cardBackground,
+                    borderRadius: 12,
+                    padding: 16,
+                    borderLeftWidth: 4,
+                    borderLeftColor: statusColor,
+                    borderWidth: 1,
+                    borderColor: theme.border,
+                  }}>
+                    <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+                      <View style={{ flex: 1 }}>
+                        <Text style={{ fontSize: 16, fontWeight: '600', color: theme.text }}>
+                          {statusIcon} {student.name || 'Unknown'}
+                        </Text>
+                        <Text style={{ fontSize: 12, color: theme.textSecondary, marginTop: 2 }}>
+                          {student.enrollmentNo || 'N/A'}
+                        </Text>
+                      </View>
+                      <View style={{
+                        backgroundColor: statusColor + '20',
+                        paddingHorizontal: 10,
+                        paddingVertical: 4,
+                        borderRadius: 8,
+                        borderWidth: 1,
+                        borderColor: statusColor,
+                      }}>
+                        <Text style={{ fontSize: 10, fontWeight: 'bold', color: statusColor }}>
+                          {studentStatus.toUpperCase()}
+                        </Text>
+                      </View>
+                    </View>
+                    <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <Text style={{ fontSize: 24, fontWeight: 'bold', color: (student.lastP2PAt && (Date.now() - student.lastP2PAt) < 8000) ? '#1565C0' : theme.text }}>
+                        {formatTime(student.timerValue || 0)}
+                      </Text>
+                      {student.isRunning && (
+                        <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                          <View style={{
+                            width: 8, height: 8, borderRadius: 4,
+                            backgroundColor: (student.lastP2PAt && (Date.now() - student.lastP2PAt) < 8000) ? '#1565C0' : '#00ff88',
+                            marginRight: 6
+                          }} />
+                          <Text style={{
+                            fontSize: 12, fontWeight: '600',
+                            color: student.receivedViaP2P ? '#1565C0' : '#00ff88'
+                          }}>
+                            {student.receivedViaP2P ? '📶 P2P' : 'LIVE'}
+                          </Text>
+                        </View>
+                      )}
+                    </View>
+                  </View>
+                </TouchableOpacity>
+              );
+            })}
+            {students.length === 0 && (
+              <View style={{ alignItems: 'center', paddingVertical: 40 }}>
+                <Text style={{ fontSize: 48, marginBottom: 12 }}>📭</Text>
+                <Text style={{ fontSize: 16, color: theme.textSecondary, marginBottom: 4 }}>
+                  No students attending yet
+                </Text>
+                <Text style={{ fontSize: 13, color: theme.textSecondary, opacity: 0.7, textAlign: 'center' }}>
+                  Students will appear here when they start their session
+                </Text>
+              </View>
+            )}
+          </View>
+        </ScrollView>
+
+        {/* Student Detail Modal */}
+        {selectedStudent && (
+          <View style={styles.modalOverlay}>
+            <Animated.View style={[styles.modalContent, {
+              backgroundColor: theme.cardBackground,
+              borderColor: theme.border,
+              transform: [{ scale: scaleAnim }]
+            }]}>
+              <ScrollView>
+                {/* Header */}
+                <View style={[styles.modalHeader, { borderBottomColor: theme.border }]}>
+                  <Text style={[styles.modalTitle, { color: theme.primary }]}>📊 Student Details</Text>
+                  <TouchableOpacity onPress={closeStudentDetails}>
+                    <Text style={styles.modalClose}>✕</Text>
+                  </TouchableOpacity>
+                </View>
+
+                {loadingDetails ? (
+                  <View style={styles.loadingContainer}>
+                    <Text style={[styles.loadingText, { color: theme.textSecondary }]}>Loading...</Text>
+                  </View>
+                ) : (
+                  <>
+                    {/* Student Info */}
+                    <View style={[styles.detailSection, { borderBottomColor: theme.border + '40' }]}>
+                      <Text style={[styles.sectionTitle, { color: theme.primary }]}>👤 Personal Information</Text>
+                      <View style={styles.infoRow}>
+                        <Text style={[styles.infoLabel, { color: theme.textSecondary }]}>Name:</Text>
+                        <Text style={[styles.infoValue, { color: theme.text }]}>{selectedStudent?.name || 'Unknown'}</Text>
+                      </View>
+                      <View style={styles.infoRow}>
+                        <Text style={[styles.infoLabel, { color: theme.textSecondary }]}>Enrollment:</Text>
+                        <Text style={[styles.infoValue, { color: theme.text }]}>{studentDetails?.enrollmentNo || selectedStudent?.enrollmentNo || 'N/A'}</Text>
+                      </View>
+                      {studentDetails && (
+                        <>
+                          {studentDetails.email && (
+                            <View style={styles.infoRow}>
+                              <Text style={[styles.infoLabel, { color: theme.textSecondary }]}>Email:</Text>
+                              <Text style={[styles.infoValue, { color: theme.text }]}>{studentDetails.email}</Text>
+                            </View>
+                          )}
+                          {studentDetails.course && (
+                            <View style={styles.infoRow}>
+                              <Text style={[styles.infoLabel, { color: theme.textSecondary }]}>Course:</Text>
+                              <Text style={[styles.infoValue, { color: theme.text }]}>{studentDetails.course}</Text>
+                            </View>
+                          )}
+                          {studentDetails.semester && (
+                            <View style={styles.infoRow}>
+                              <Text style={[styles.infoLabel, { color: theme.textSecondary }]}>Semester:</Text>
+                              <Text style={[styles.infoValue, { color: theme.text }]}>{studentDetails.semester}</Text>
+                            </View>
+                          )}
+                          {studentDetails.phone && (
+                            <View style={styles.infoRow}>
+                              <Text style={[styles.infoLabel, { color: theme.textSecondary }]}>Phone:</Text>
+                              <Text style={[styles.infoValue, { color: theme.text }]}>{studentDetails.phone}</Text>
+                            </View>
+                          )}
+                        </>
+                      )}
+                    </View>
+
+                    {/* Current Status */}
+                    <View style={[styles.detailSection, { borderBottomColor: theme.border + '40' }]}>
+                      <Text style={[styles.sectionTitle, { color: theme.primary }]}>⏱️ Current Session</Text>
+                      <View style={styles.infoRow}>
+                        <Text style={[styles.infoLabel, { color: theme.textSecondary }]}>Status:</Text>
+                        <Text style={[styles.infoValue, {
+                          color: (selectedStudent?.status === 'present') ? (isDarkTheme ? '#00ff88' : '#059669') :
+                            (selectedStudent?.status === 'attending') ? (isDarkTheme ? '#ffaa00' : '#d97706') : (isDarkTheme ? '#ff4444' : '#dc2626')
+                        }]}>
+                          {(selectedStudent?.status || 'absent').toUpperCase()}
+                        </Text>
+                      </View>
+                      <View style={styles.infoRow}>
+                        <Text style={[styles.infoLabel, { color: theme.textSecondary }]}>Timer:</Text>
+                        <Text style={[styles.infoValue, { color: theme.text }]}>{formatTime(selectedStudent?.timerValue || 0)}</Text>
+                      </View>
+                      <View style={styles.infoRow}>
+                        <Text style={[styles.infoLabel, { color: theme.textSecondary }]}>Active:</Text>
+                        <Text style={[styles.infoValue, { color: theme.text }]}>{selectedStudent?.isRunning ? 'Yes ●' : 'No'}</Text>
+                      </View>
+                    </View>
+
+                    {/* Attendance Statistics */}
+                    {attendanceStats && attendanceStats.total !== undefined && (
+                      <View style={[styles.detailSection, { borderBottomColor: theme.border + '40' }]}>
+                        <Text style={[styles.sectionTitle, { color: theme.primary }]}>📈 Attendance Statistics</Text>
+                        <View style={styles.statsGrid}>
+                          <View style={[styles.statBox, {
+                            backgroundColor: isDarkTheme ? '#0a1628' : '#f9fafb',
+                            borderColor: theme.border
+                          }]}>
+                            <Text style={[styles.statNumber, { color: theme.primary }]}>{attendanceStats.total || 0}</Text>
+                            <Text style={[styles.statLabel, { color: theme.textSecondary }]}>Total Days</Text>
+                          </View>
+                          <View style={[styles.statBox, {
+                            backgroundColor: isDarkTheme ? '#0a1628' : '#f9fafb',
+                            borderColor: theme.border
+                          }]}>
+                            <Text style={[styles.statNumber, { color: isDarkTheme ? '#00ff88' : '#059669' }]}>{attendanceStats.present || 0}</Text>
+                            <Text style={[styles.statLabel, { color: theme.textSecondary }]}>Present</Text>
+                          </View>
+                          <View style={[styles.statBox, {
+                            backgroundColor: isDarkTheme ? '#0a1628' : '#f9fafb',
+                            borderColor: theme.border
+                          }]}>
+                            <Text style={[styles.statNumber, { color: isDarkTheme ? '#ff4444' : '#dc2626' }]}>{attendanceStats.absent || 0}</Text>
+                            <Text style={[styles.statLabel, { color: theme.textSecondary }]}>Absent</Text>
+                          </View>
+                          <View style={[styles.statBox, {
+                            backgroundColor: isDarkTheme ? '#0a1628' : '#f9fafb',
+                            borderColor: theme.border
+                          }]}>
+                            <Text style={[styles.statNumber, { color: theme.primary }]}>{attendanceStats.percentage || 0}%</Text>
+                            <Text style={[styles.statLabel, { color: theme.textSecondary }]}>Percentage</Text>
+                          </View>
+                        </View>
+                      </View>
+                    )}
+
+                    {/* Attendance History */}
+                    {attendanceRecords && attendanceRecords.length > 0 && (
+                      <View style={[styles.detailSection, { borderBottomWidth: 0 }]}>
+                        <Text style={[styles.sectionTitle, { color: theme.primary }]}>📅 Recent Attendance (Last 30 Days)</Text>
+                        {attendanceRecords.slice(0, 10).map((record, index) => {
+                          if (!record || !record.date) return null;
+                          return (
+                            <View key={index} style={[styles.recordRow, { borderBottomColor: theme.border + '20' }]}>
+                              <Text style={[styles.recordDate, { color: theme.text }]}>
+                                {new Date(record.date).toLocaleDateString('en-US', {
+                                  month: 'short',
+                                  day: 'numeric',
+                                  year: 'numeric'
+                                })}
+                              </Text>
+                              <Text style={[styles.recordStatus, {
+                                color: record.status === 'present'
+                                  ? (isDarkTheme ? '#00ff88' : '#059669')
+                                  : (isDarkTheme ? '#ff4444' : '#dc2626')
+                              }]}>
+                                {record.status === 'present' ? '✅ Present' : '❌ Absent'}
+                              </Text>
+                            </View>
+                          );
+                        })}
+                      </View>
+                    )}
+                  </>
+                )}
+              </ScrollView>
+            </Animated.View>
+          </View>
+        )}
+
+        {/* Profile Modal */}
+        {showProfile && (
+          <Modal
+            transparent={true}
+            visible={showProfile}
+            animationType="fade"
+            onRequestClose={() => setShowProfile(false)}
+          >
+            <View style={styles.modalOverlay}>
+              <Animated.View style={[styles.profileModalContent, {
+                backgroundColor: theme.cardBackground,
+                borderColor: theme.border,
+                transform: [{ scale: profileScaleAnim }]
+              }]}>
+                <ScrollView>
+                  {/* Header */}
+                  <View style={[styles.modalHeader, { borderBottomColor: theme.border }]}>
+                    <Text style={[styles.modalTitle, { color: theme.primary }]}>👤 Profile</Text>
+                    <TouchableOpacity onPress={() => setShowProfile(false)}>
+                      <Text style={styles.modalClose}>✕</Text>
+                    </TouchableOpacity>
+                  </View>
+
+                  {/* Profile Avatar */}
+                  <View style={{ alignItems: 'center', paddingVertical: 30 }}>
+                    <View style={{
+                      width: 120,
+                      height: 120,
+                      borderRadius: 60,
+                      backgroundColor: theme.primary,
+                      justifyContent: 'center',
+                      alignItems: 'center',
+                      borderWidth: 4,
+                      borderColor: theme.border,
+                      marginBottom: 15,
+                      overflow: 'hidden',
+                    }}>
+                      {userData?.photoUrl ? (
+                        <Image
+                          source={{ uri: userData.photoUrl }}
+                          style={{ width: '100%', height: '100%' }}
+                          resizeMode="cover"
+                          onError={(e) => console.log('❌ Profile modal photo error:', e.nativeEvent.error)}
+                          onLoad={() => console.log('✅ Profile modal photo loaded')}
+                        />
+                      ) : (
+                        <Text style={{ fontSize: 48, color: isDarkTheme ? '#0a1628' : '#ffffff', fontWeight: 'bold' }}>
+                          {getInitials(userData?.name || 'User')}
+                        </Text>
+                      )}
+                    </View>
+                    <Text style={{ fontSize: 24, fontWeight: 'bold', color: theme.text }}>
+                      {userData?.name || 'User'}
+                    </Text>
+                    <Text style={{ fontSize: 14, color: theme.textSecondary, marginTop: 5 }}>
+                      {selectedRole === 'teacher' ? '👨‍🏫 Teacher' : '🎓 Student'}
+                    </Text>
+                  </View>
+
+                  {/* Profile Information */}
+                  <View style={[styles.detailSection, { borderBottomColor: theme.border + '40' }]}>
+                    <Text style={[styles.sectionTitle, { color: theme.primary }]}>📋 Personal Information</Text>
+
+                    <View style={styles.infoRow}>
+                      <Text style={[styles.infoLabel, { color: theme.textSecondary }]}>Name:</Text>
+                      <Text style={[styles.infoValue, { color: theme.text }]}>{userData?.name || 'N/A'}</Text>
+                    </View>
+
+                    {selectedRole === 'teacher' ? (
+                      <>
+                        <View style={styles.infoRow}>
+                          <Text style={[styles.infoLabel, { color: theme.textSecondary }]}>Employee ID:</Text>
+                          <Text style={[styles.infoValue, { color: theme.text }]}>{userData?.employeeId || loginId || 'N/A'}</Text>
+                        </View>
+                        <View style={styles.infoRow}>
+                          <Text style={[styles.infoLabel, { color: theme.textSecondary }]}>Department:</Text>
+                          <Text style={[styles.infoValue, { color: theme.text }]}>{userData?.department || 'N/A'}</Text>
+                        </View>
+                        {userData?.email && (
+                          <View style={styles.infoRow}>
+                            <Text style={[styles.infoLabel, { color: theme.textSecondary }]}>Email:</Text>
+                            <Text style={[styles.infoValue, { color: theme.text }]}>{userData.email}</Text>
+                          </View>
+                        )}
+                        {userData?.phone && (
+                          <View style={styles.infoRow}>
+                            <Text style={[styles.infoLabel, { color: theme.textSecondary }]}>Phone:</Text>
+                            <Text style={[styles.infoValue, { color: theme.text }]}>{userData.phone}</Text>
+                          </View>
+                        )}
+                      </>
+                    ) : (
+                      <>
+                        <View style={styles.infoRow}>
+                          <Text style={[styles.infoLabel, { color: theme.textSecondary }]}>Enrollment No:</Text>
+                          <Text style={[styles.infoValue, { color: theme.text }]}>{userData?.enrollmentNo || loginId || 'N/A'}</Text>
+                        </View>
+                        <View style={styles.infoRow}>
+                          <Text style={[styles.infoLabel, { color: theme.textSecondary }]}>Course:</Text>
+                          <Text style={[styles.infoValue, { color: theme.text }]}>{userData?.course || branch || 'N/A'}</Text>
+                        </View>
+                        <View style={styles.infoRow}>
+                          <Text style={[styles.infoLabel, { color: theme.textSecondary }]}>Semester:</Text>
+                          <Text style={[styles.infoValue, { color: theme.text }]}>{userData?.semester || semester || 'N/A'}</Text>
+                        </View>
+                        {userData?.email && (
+                          <View style={styles.infoRow}>
+                            <Text style={[styles.infoLabel, { color: theme.textSecondary }]}>Email:</Text>
+                            <Text style={[styles.infoValue, { color: theme.text }]}>{userData.email}</Text>
+                          </View>
+                        )}
+                        {userData?.phone && (
+                          <View style={styles.infoRow}>
+                            <Text style={[styles.infoLabel, { color: theme.textSecondary }]}>Phone:</Text>
+                            <Text style={[styles.infoValue, { color: theme.text }]}>{userData.phone}</Text>
+                          </View>
+                        )}
+                      </>
+                    )}
+                  </View>
+
+                  {/* Actions */}
+                  <View style={{ padding: 20 }}>
+                    <TouchableOpacity
+                      style={[styles.logoutButton, { backgroundColor: '#ff4444' }]}
+                      onPress={() => {
+                        setShowProfile(false);
+                        setTimeout(() => handleLogout(), 300);
+                      }}
+                    >
+                      <Text style={styles.logoutButtonText}>🚪 Logout</Text>
+                    </TouchableOpacity>
+                  </View>
+                </ScrollView>
+              </Animated.View>
+            </View>
+          </Modal>
+        )}
+        <ToastContainer />
+      </View>
+    );
+  }
+
+  // Student Timer Screen
+  const screen = config?.studentScreen || getDefaultConfig().studentScreen;
+  const startPauseBtn = screen?.buttons?.[0] || getDefaultConfig().studentScreen.buttons[0];
+  const resetBtn = screen?.buttons?.[1] || getDefaultConfig().studentScreen.buttons[1];
+
+  // Calculate current status based on running state
+  const currentStatus = isRunning ? 'attending' : 'absent';
+  const statusColor = currentStatus === 'present' ? (isDarkTheme ? '#00ff88' : '#059669') :
+    currentStatus === 'attending' ? (isDarkTheme ? '#ffaa00' : '#d97706') :
+      (isDarkTheme ? '#ff4444' : '#dc2626');
+  const statusText = currentStatus === 'present' ? '✅ Completed' :
+    currentStatus === 'attending' ? '⏱️ In Progress' : '❌ Not Started';
+
+  // Render Calendar Screen (Teachers) - Check FIRST
+  if (activeTab === 'calendar' && selectedRole === 'teacher') {
+    return (
+      <View style={{ flex: 1, backgroundColor: theme.background }}>
+        <StatusBar style={theme.statusBar} />
+        <CalendarScreen
+          theme={theme}
+          userData={userData}
+          semester={semester}
+          branch={branch}
+          socketUrl={SOCKET_URL}
+          isTeacher={true}
+        />
+        <BottomNavigation
+          theme={theme}
+          activeTab={activeTab}
+          onTabChange={setActiveTab}
+          userRole={selectedRole}
+        />
+      </View>
+    );
+  }
+
+  // Render Calendar Screen (Students) - Check SECOND
+  if (activeTab === 'calendar' && selectedRole === 'student') {
+    return (
+      <View style={{ flex: 1, backgroundColor: theme.background }}>
+        <StatusBar style={theme.statusBar} />
+        <CalendarScreen
+          theme={theme}
+          studentId={studentId}
+          semester={semester}
+          branch={branch}
+          socketUrl={SOCKET_URL}
+          todayAttendance={todayAttendance}
+          isTimerRunning={offlineTimerState.isRunning}
+        />
+        <BottomNavigation
+          theme={theme}
+          activeTab={activeTab}
+          onTabChange={setActiveTab}
+          userRole={selectedRole}
+          notificationBadge={notificationBadge}
+        />
+      </View>
+    );
+  }
+
+  // Render Timetable Screen (Teachers)
+  if (activeTab === 'timetable' && selectedRole === 'teacher') {
+    return (
+      <View style={{ flex: 1, backgroundColor: theme.background }}>
+        <StatusBar style={theme.statusBar} />
+        <TimetableScreen
+          theme={theme}
+          semester={semester}
+          branch={branch}
+          socketUrl={SOCKET_URL}
+          canEdit={userData?.canEditTimetable || false}
+          isTeacher={true}
+          userData={userData}
+          loginId={loggedInUserId}
+          onLogout={handleLogout}
+        />
+        <BottomNavigation
+          theme={theme}
+          activeTab={activeTab}
+          onTabChange={setActiveTab}
+          userRole={selectedRole}
+          notificationBadge={notificationBadge}
+        />
+      </View>
+    );
+  }
+
+  // OLD TABS REMOVED - Using modern 3-tab navigation (Home, Calendar, Timetable)
+  // Notifications and Students tabs are now accessed via menu in TeacherHeader
+
+
+  // Render Timetable Screen
+  if (activeTab === 'timetable') {
+    // Calculate canEdit based on current userData
+    const canEditTimetable = selectedRole === 'teacher' && userData?.canEditTimetable === true;
+    console.log('📋 Rendering TimetableScreen - canEdit:', canEditTimetable, '| userData.canEditTimetable:', userData?.canEditTimetable);
+
+    return (
+      <View style={{ flex: 1, backgroundColor: theme.background }}>
+        <StatusBar style={theme.statusBar} />
+        <TimetableScreen
+          key={`timetable-${userData?.canEditTimetable}`} // Force re-render when permission changes
+          theme={theme}
+          semester={semester}
+          branch={branch}
+          socketUrl={SOCKET_URL}
+          canEdit={canEditTimetable}
+          isTeacher={selectedRole === 'teacher'}
+          onRefreshPermissions={refreshUserProfile}
+          userData={userData}
+          loginId={loggedInUserId}
+          onLogout={handleLogout}
+        />
+        <BottomNavigation
+          theme={theme}
+          activeTab={activeTab}
+          onTabChange={setActiveTab}
+          userRole={selectedRole}
+          notificationBadge={notificationBadge}
+        />
+      </View>
+    );
+  }
+
+  // WiFi Test Screen (Development - Students only)
+  if (activeTab === 'wifi' && selectedRole === 'student') {
+    return (
+      <View style={{ flex: 1, backgroundColor: theme.background }}>
+        <StatusBar style={theme.statusBar} />
+        <TestBSSID theme={theme} />
+        <BottomNavigation
+          theme={theme}
+          activeTab={activeTab}
+          onTabChange={setActiveTab}
+          userRole={selectedRole}
+          notificationBadge={notificationBadge}
+        />
+      </View>
+    );
+  }
+
+// Home Screen (Timer) - STUDENTS ONLY
+  if (selectedRole === 'student' && activeTab === 'home') {
+    return (
+      <View style={[styles.container, { backgroundColor: theme.background }]}>
+        <StatusBar style={theme.statusBar} />
+
+        <ScrollView
+          contentContainerStyle={{ paddingTop: 20, paddingBottom: 110, paddingHorizontal: 20, alignItems: 'center' }}
+          showsVerticalScrollIndicator={false}
+          style={{ flex: 1 }}
+          onTouchStart={(e) => {
+            // Close past period view if user taps anywhere (except on the modal itself)
+            if (viewingPastPeriod) {
+              closePastPeriodView();
+            }
+          }}
+          refreshControl={
+            <RefreshControl
+              refreshing={refreshingStudent}
+              onRefresh={onRefreshStudent}
+              colors={[theme.primary]}
+              tintColor={theme.primary}
+            />
+          }
+        >
+          {/* Header: Profile (left) - LetsBunk (center) - Theme (right) */}
+          <View style={{
+            width: '100%',
+            flexDirection: 'row',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            paddingHorizontal: 20,
+            paddingTop: 20,
+            paddingBottom: 10,
+          }}>
+            {/* Profile Picture - Left */}
+            <TouchableOpacity onPress={() => setShowLanyard(true)} activeOpacity={0.8}>
+              <View style={{
+                width: 50,
+                height: 50,
+                borderRadius: 25,
+                backgroundColor: theme.primary,
+                justifyContent: 'center',
+                alignItems: 'center',
+                borderWidth: 2,
+                borderColor: theme.border,
+                overflow: 'hidden',
+              }}>
+                {userData?.photoUrl ? (
+                  <Image
+                    source={{ uri: userData.photoUrl }}
+                    style={{ width: '100%', height: '100%' }}
+                    resizeMode="cover"
+                  />
+                ) : (
+                  <Text style={{ fontSize: 20, color: isDarkTheme ? '#0a1628' : '#ffffff', fontWeight: 'bold' }}>
+                    {getInitials(studentName || 'Student')}
+                  </Text>
+                )}
+              </View>
+            </TouchableOpacity>
+
+            {/* LetsBunk - Center */}
+            <Text style={{
+              fontSize: 24,
+              fontWeight: 'bold',
+              color: theme.primary,
+              letterSpacing: 1,
+            }}>
+              LetsBunk
+            </Text>
+
+            {/* Theme Toggle - Right */}
+            <TouchableOpacity
+              onPress={toggleTheme}
+              style={{
+                backgroundColor: theme.primary + '20',
+                width: 50,
+                height: 50,
+                borderRadius: 25,
+                justifyContent: 'center',
+                alignItems: 'center',
+                borderWidth: 2,
+                borderColor: theme.border,
+              }}
+            >
+              <Text style={{ fontSize: 20 }}>{THEMES[themeMode]?.emoji || '🎨'}</Text>
+            </TouchableOpacity>
+          </View>
+
+          {/* Title Section - REMOVED per user request */}
+
+
+
+          {/* Current Period Banner - shown above timer when running */}
+          {(offlineTimerState.isRunning && offlineTimerState.currentLecture) || offlinePeriod ? (() => {
+            // Always prefer offline timetable as source of truth
+            const p = offlinePeriod;
+            const fb = offlineTimerState.currentLecture || {};
+            const subject = p?.subject || fb.subject || 'Current Period';
+            const teacher = p?.teacher || p?.teacherName || fb.teacher || '';
+            const room = p?.room || fb.room || '';
+            const startTime = p?.startTime || fb.startTime || '';
+            const endTime = p?.endTime || fb.endTime || '';
+            const periodNum = p?.period || null;
+            const isLive = offlineTimerState.isRunning;
+
+            return (
+              <View style={{
+                width: '100%',
+                maxWidth: 400,
+                backgroundColor: isLive ? '#22c55e18' : theme.cardBackground,
+                borderRadius: 12,
+                paddingVertical: 10,
+                paddingHorizontal: 16,
+                borderWidth: 1.5,
+                borderColor: isLive ? '#22c55e' : theme.border,
+                marginBottom: 8,
+                flexDirection: 'row',
+                alignItems: 'center',
+                gap: 10,
+              }}>
+                <Text style={{ fontSize: 20 }}>📚</Text>
+                <View style={{ flex: 1 }}>
+                  {/* Subject name from offline timetable */}
+                  <Text style={{
+                    color: isLive ? '#22c55e' : theme.text,
+                    fontSize: 13,
+                    fontWeight: '700',
+                    letterSpacing: 0.3,
+                  }}>
+                    {subject}
+                  </Text>
+                  {/* Teacher, Room, Time + Period number */}
+                  <Text style={{
+                    color: theme.textSecondary,
+                    fontSize: 11,
+                    marginTop: 2,
+                  }}>
+                    {[
+                      teacher && `👤 ${teacher}`,
+                      room && `🚪 ${room}`,
+                      startTime && endTime && `⏰ ${startTime} – ${endTime}${periodNum ? `  •  Period ${periodNum}` : ''}`,
+                    ].filter(Boolean).join('   ')}
+                  </Text>
+                </View>
+                {isLive && (
+                  <View style={{
+                    backgroundColor: '#22c55e',
+                    borderRadius: 8,
+                    paddingHorizontal: 8,
+                    paddingVertical: 3,
+                  }}>
+                    <Text style={{ color: '#fff', fontSize: 10, fontWeight: '700' }}>LIVE</Text>
+                  </View>
+                )}
+              </View>
+            );
+          })() : null}
+
+{/* Circular Timer - Visual timetable display */}
+          <CircularTimer
+            theme={theme}
+            timetable={timetable}
+            currentDay={currentDay}
+            currentPeriodNumber={currentPeriodNumber}
+            onSegmentPress={handleSegmentPress}
+            segmentTimerData={segmentTimerData}
+          />
+
+          {/* Show current period information */}
+          {currentClassInfo ? (
+            <>
+
+              {/* WiFi Bypass Button (Development/Testing) */}
+              {(__DEV__ || selectedRole === 'teacher') && (
+                <View style={{ alignItems: 'center', marginTop: 15, gap: 10 }}>
+                  <TouchableOpacity
+                    style={{
+                      paddingHorizontal: 20,
+                      paddingVertical: 10,
+                      backgroundColor: theme.primary + '20',
+                      borderRadius: 20,
+                      borderWidth: 1,
+                      borderColor: theme.primary,
+                    }}
+                    onPress={() => {
+                      console.log('🧪 WiFi bypass button pressed');
+                      setWifiDebugInfo({
+                        status: 'AUTHORIZED (SIMULATED)',
+                        currentBSSID: 'Simulated for testing',
+                        expectedBSSID: 'Not required',
+                        room: currentClassInfo?.room || 'Test room',
+                        lastChecked: new Date().toLocaleTimeString()
+                      });
+                      alert('✅ WiFi Bypass Activated\n\nWiFi validation has been bypassed for testing purposes.\n\nYou can now start attendance tracking.');
+                    }}
+                  >
+                    <Text style={{
+                      color: theme.primary,
+                      fontSize: 12,
+                      fontWeight: '600',
+                      textAlign: 'center'
+                    }}>
+                      📶 Bypass WiFi Check
+                    </Text>
+                  </TouchableOpacity>
+
+                  {/* BSSID Diagnostic Button */}
+                  <TouchableOpacity
+                    style={{
+                      paddingHorizontal: 20,
+                      paddingVertical: 10,
+                      backgroundColor: '#10b981' + '20',
+                      borderRadius: 20,
+                      borderWidth: 1,
+                      borderColor: '#10b981',
+                    }}
+                    onPress={async () => {
+                      console.log('🔍 BSSID diagnostic button pressed');
+
+                      try {
+                        // Import NativeWiFiService
+                        const NativeWiFiService = require('./NativeWiFiService').default;
+
+                        // Run comprehensive WiFi validation
+                        const result = await NativeWiFiService.validateWiFiWithPermissions();
+
+                        let message = '📶 BSSID Detection Results:\n\n';
+                        message += `✅ Success: ${result.success ? 'YES' : 'NO'}\n`;
+                        message += `📡 Current BSSID: ${result.currentBSSID}\n`;
+                        message += `📶 SSID: ${result.ssid || 'Unknown'}\n`;
+                        message += `📊 Signal: ${result.rssi || 0} dBm\n`;
+                        message += `🔐 Permissions: ${result.hasPermissions ? 'Granted' : 'Denied'}\n`;
+                        message += `📱 WiFi Enabled: ${result.wifiEnabled ? 'YES' : 'NO'}\n`;
+
+                        if (!result.success && result.error) {
+                          message += `\n❌ Error: ${result.error}`;
+                        }
+
+                        // Also update debug info
+                        setWifiDebugInfo({
+                          status: result.success ? 'DETECTED' : 'FAILED',
+                          currentBSSID: result.currentBSSID,
+                          expectedBSSID: 'Diagnostic mode',
+                          room: currentClassInfo?.room || 'Test',
+                          lastChecked: new Date().toLocaleTimeString(),
+                          reason: result.error || 'Diagnostic check'
+                        });
+
+                        alert(message);
+
+                      } catch (error) {
+                        console.error('❌ BSSID diagnostic error:', error);
+                        alert(`❌ Diagnostic Error:\n\n${error.message}`);
+                      }
+                    }}
+                  >
+                    <Text style={{
+                      color: '#10b981',
+                      fontSize: 12,
+                      fontWeight: '600',
+                      textAlign: 'center'
+                    }}>
+                      🔍 Check BSSID
+                    </Text>
+                  </TouchableOpacity>
+                </View>
+              )}
+            </>
+          ) : (
+            <View style={{
+              width: '100%',
+              maxWidth: 400,
+              backgroundColor: theme.cardBackground,
+              borderRadius: 20,
+              padding: 30,
+              alignItems: 'center',
+              marginVertical: 20,
+              borderWidth: 2,
+              borderColor: theme.border,
+            }}>
+              <Text style={{ fontSize: 48, marginBottom: 15 }}>🕐</Text>
+              <Text style={{
+                fontSize: 18,
+                fontWeight: 'bold',
+                color: theme.text,
+                marginBottom: 10,
+                textAlign: 'center'
+              }}>
+                No Lectures Right Now
+              </Text>
+              <Text style={{
+                fontSize: 14,
+                color: theme.textSecondary,
+                textAlign: 'center',
+                lineHeight: 20
+              }}>
+                Attendance tracking is only available during lecture hours. Please check your timetable for class timings.
+              </Text>
+            </View>
+          )}
+
+
+
+          {/* Random Ring Banner — student must respond */}
+          {randomRingData && (
+            <View style={{
+              width: '100%',
+              maxWidth: 400,
+              backgroundColor: randomRingData.isRejection ? '#7f1d1d' : '#4c1d95',
+              borderRadius: 12,
+              padding: 16,
+              marginBottom: 12,
+              borderWidth: 2,
+              borderColor: randomRingData.isRejection ? '#ef4444' : '#a78bfa',
+              alignItems: 'center',
+            }}>
+              <Text style={{ fontSize: 24, marginBottom: 6 }}>🔔</Text>
+              <Text style={{ fontSize: 15, fontWeight: 'bold', color: '#ffffff', textAlign: 'center', marginBottom: 4 }}>
+                {randomRingData.isRejection ? 'Presence Rejected' : 'Random Ring!'}
+              </Text>
+              <Text style={{ fontSize: 12, color: '#e0d7ff', textAlign: 'center', marginBottom: 12 }}>
+                {randomRingData.isRejection
+                  ? 'Teacher rejected your presence. Face verification required within 5 minutes.'
+                  : 'Your teacher is verifying attendance. Confirm presence or verify your face.'}
+              </Text>
+              {!randomRingData.isRejection && (
+                <View style={{ flexDirection: 'row', gap: 10 }}>
+                  <TouchableOpacity
+                    style={{ backgroundColor: '#ffffff', borderRadius: 8, paddingVertical: 10, paddingHorizontal: 20, flex: 1, alignItems: 'center' }}
+                    onPress={async () => {
+                      const result = await processRandomRingVerification(randomRingData, 'present');
+                      if (result.success) {
+                        if (result.mode !== 'server') {
+                          alert('✅ Presence confirmed! Timer resumed.');
+                        } else {
+                          setRandomRingData(prev => prev ? { ...prev, responded: true } : null);
+                        }
+                      } else {
+                        alert('❌ Failed. Please try again.');
+                      }
+                    }}
+                  >
+                    <Text style={{ color: '#4c1d95', fontWeight: 'bold', fontSize: 13 }}>✋ I'm Here</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={{ backgroundColor: '#7c3aed', borderRadius: 8, paddingVertical: 10, paddingHorizontal: 20, flex: 1, alignItems: 'center' }}
+                    onPress={handleRandomRingFaceVerify}
+                  >
+                    <Text style={{ color: '#ffffff', fontWeight: 'bold', fontSize: 13 }}>📸 Verify Face</Text>
+                  </TouchableOpacity>
+                </View>
+              )}
+              {randomRingData.responded && (
+                <Text style={{ color: '#86efac', fontSize: 12, marginTop: 8 }}>✅ Response sent — waiting for teacher</Text>
+              )}
+              {randomRingData.isRejection && (
+                <TouchableOpacity
+                  style={{ backgroundColor: '#ef4444', borderRadius: 8, paddingVertical: 10, paddingHorizontal: 28, marginTop: 4 }}
+                  onPress={handleRandomRingFaceVerify}
+                >
+                  <Text style={{ color: '#ffffff', fontWeight: 'bold', fontSize: 14 }}>📸 Verify Face</Text>
+                </TouchableOpacity>
+)}
+            </View>
+          )}
+
+          {/* Past Period Detail Modal - Shown when user taps a past segment */}
+          {viewingPastPeriod && pastPeriodData && (
+            <TouchableOpacity 
+              activeOpacity={1} 
+              onPress={closePastPeriodView}
+              style={{ width: '100%', alignItems: 'center' }}
+            >
+              <View style={{
+                width: '100%',
+                maxWidth: 400,
+                backgroundColor: theme.cardBackground,
+                borderRadius: 12,
+                padding: 20,
+                borderWidth: 2,
+                borderColor: pastPeriodData.present ? '#22c55e' : (pastPeriodData.isFuture ? theme.border : '#ef4444'),
+                marginTop: 15,
+              }}>
+                {/* Timer Header */}
+                <Text style={{
+                  fontSize: 16,
+                  fontWeight: 'bold',
+                  color: theme.primary,
+                  textAlign: 'center',
+                  marginBottom: 15,
+                }}>
+                  🕐 {pastPeriodData.period} • {pastPeriodData.subject}
+                </Text>
+
+                <Text style={{ fontSize: 12, color: theme.textSecondary, textAlign: 'center', marginBottom: 15 }}>
+                  📍 {pastPeriodData.room} • 🕐 {pastPeriodData.time}
+                </Text>
+
+                {/* Timer Display */}
+                <View style={{
+                  backgroundColor: theme.background,
+                  borderRadius: 15,
+                  padding: 20,
+                  marginBottom: 15,
+                  alignItems: 'center',
+                  borderWidth: 2,
+                  borderColor: pastPeriodData.present ? '#22c55e' : (pastPeriodData.isFuture ? theme.border : '#ef4444'),
+                }}>
+                  <Text style={{
+                    fontSize: 48,
+                    fontWeight: 'bold',
+                    fontFamily: 'monospace',
+                    color: pastPeriodData.present ? '#22c55e' : (pastPeriodData.isFuture ? theme.text : '#ef4444'),
+                    textAlign: 'center',
+                  }}>
+                    {Math.floor((pastPeriodData.attended || 0) / 3600).toString().padStart(2, '0')}:
+                    {Math.floor(((pastPeriodData.attended || 0) % 3600) / 60).toString().padStart(2, '0')}:
+                    {((pastPeriodData.attended || 0) % 60).toString().padStart(2, '0')}
+                  </Text>
+                  <Text style={{
+                    fontSize: 12,
+                    color: theme.textSecondary,
+                    textAlign: 'center',
+                    marginTop: 5,
+                  }}>
+                    {pastPeriodData.isFuture ? 'Period has not started yet' : `${Math.floor((pastPeriodData.attended || 0) / 60)} minutes attended`}
+                  </Text>
+                </View>
+
+                {/* Attendance Stats */}
+                {!pastPeriodData.isFuture && !pastPeriodData.notFound && (
+                  <View style={{ backgroundColor: theme.background, borderRadius: 8, padding: 15 }}>
+                    <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: 10 }}>
+                      <Text style={{ fontSize: 20, fontWeight: 'bold', color: pastPeriodData.present ? '#22c55e' : '#ef4444' }}>
+                        {pastPeriodData.present ? '✅ Present' : '❌ Absent'}
+                      </Text>
+                      <Text style={{ fontSize: 20, fontWeight: 'bold', color: theme.text }}>
+                        {pastPeriodData.percentage}%
+                      </Text>
+                    </View>
+                    
+                    <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
+                      <View>
+                        <Text style={{ fontSize: 11, color: theme.textSecondary }}>Attended</Text>
+                        <Text style={{ fontSize: 14, fontWeight: '600', color: theme.text }}>
+                          {Math.floor(pastPeriodData.attended / 60)}m {pastPeriodData.attended % 60}s
+                        </Text>
+                      </View>
+                      <View style={{ alignItems: 'center' }}>
+                        <Text style={{ fontSize: 11, color: theme.textSecondary }}>Total Period</Text>
+                        <Text style={{ fontSize: 14, fontWeight: '600', color: theme.text }}>
+                          {Math.floor(pastPeriodData.total / 60)}m {pastPeriodData.total % 60}s
+                        </Text>
+                      </View>
+                    </View>
+                  </View>
+                )}
+                
+                {pastPeriodData.notFound && (
+                  <View style={{ backgroundColor: theme.background, borderRadius: 8, padding: 15, alignItems: 'center' }}>
+                    <Text style={{ fontSize: 14, color: theme.textSecondary }}>
+                      ⚠️ No attendance data recorded for this period
+                    </Text>
+                  </View>
+                )}
+
+                {/* Tip */}
+                <Text style={{ fontSize: 11, color: theme.textSecondary, marginTop: 15, textAlign: 'center' }}>
+                  💡 Tap anywhere to return to live timer
+                </Text>
+              </View>
+            </TouchableOpacity>
+          )}
+
+          {/* Offline Timer Controls - NEW TIMER SYSTEM */}
+          {offlineTimerInitialized && !currentClassInfo && !viewingPastPeriod && (
+            <View style={{
+              width: '100%',
+              maxWidth: 400,
+              backgroundColor: theme.cardBackground,
+              borderRadius: 12,
+              padding: 28,
+              borderWidth: 2,
+              borderColor: theme.border,
+              marginTop: 15,
+              alignItems: 'center',
+            }}>
+              <Text style={{ fontSize: 40, marginBottom: 12 }}>🎉</Text>
+              <Text style={{ fontSize: 18, fontWeight: 'bold', color: theme.text, textAlign: 'center', marginBottom: 8 }}>
+                yayyy!! NO class currently
+              </Text>
+              <Text style={{ fontSize: 13, color: theme.textSecondary, textAlign: 'center' }}>
+                Your next class will appear here automatically when it starts.
+              </Text>
+            </View>
+          )}
+          {currentClassInfo && offlineTimerInitialized && !viewingPastPeriod && (
+            <View style={{
+              width: '100%',
+              maxWidth: 400,
+              backgroundColor: theme.cardBackground,
+              borderRadius: 12,
+              padding: 20,
+              borderWidth: 2,
+              borderColor: offlineTimerState.isRunning ? '#22c55e' : theme.border,
+              marginTop: 15,
+            }}>
+              {/* Timer Header */}
+              <Text style={{
+                fontSize: 16,
+                fontWeight: 'bold',
+                color: theme.primary,
+                textAlign: 'center',
+                marginBottom: 15,
+              }}>
+                🕐 Offline Timer System
+              </Text>
+
+              {/* Timer Display */}
+              <View style={{
+                backgroundColor: theme.background,
+                borderRadius: 15,
+                padding: 20,
+                marginBottom: 15,
+                alignItems: 'center',
+                borderWidth: 2,
+                borderColor: offlineTimerState.isRunning ? '#22c55e' : theme.border,
+              }}>
+                {(() => {
+                  // Cap displayed seconds to the lecture duration so timer never shows > period length
+                  const periodSrcDisplay = offlinePeriod || offlineTimerState.currentLecture || currentClassInfo;
+                  const maxSecs = (() => {
+                    if (typeof periodSrcDisplay?.startTime === 'string' && typeof periodSrcDisplay?.endTime === 'string') {
+                      const [sh, sm] = periodSrcDisplay.startTime.split(':').map(Number);
+                      const [eh, em] = periodSrcDisplay.endTime.split(':').map(Number);
+                      const dur = ((eh * 60 + em) - (sh * 60 + sm)) * 60;
+                      if (dur > 0) return dur;
+                    }
+                    return null; // no cap if no period info
+                  })();
+                  const displaySecs = maxSecs !== null
+                    ? Math.min(offlineTimerState.timerSeconds || 0, maxSecs)
+                    : (offlineTimerState.timerSeconds || 0);
+                  return (
+                    <>
+                      <Text style={{
+                        fontSize: 48,
+                        fontWeight: 'bold',
+                        fontFamily: 'monospace',
+                        color: offlineTimerState.isRunning ? '#22c55e' : theme.text,
+                        textAlign: 'center',
+                      }}>
+                        {Math.floor(displaySecs / 3600).toString().padStart(2, '0')}:
+                        {Math.floor((displaySecs % 3600) / 60).toString().padStart(2, '0')}:
+                        {(displaySecs % 60).toString().padStart(2, '0')}
+                      </Text>
+                      <Text style={{
+                        fontSize: 12,
+                        color: theme.textSecondary,
+                        textAlign: 'center',
+                        marginTop: 5,
+                      }}>
+                        {displaySecs > 0 ? `${Math.floor(displaySecs / 60)} minutes attended` : 'Ready to start'}
+                      </Text>
+                    </>
+                  );
+                })()}
+              </View>
+
+              {/* Attendance Threshold Progress */}
+              {(() => {
+                const pctRequired = offlineTimerState.attendanceThreshold || 75;
+                const periodNum = offlinePeriod?.period || offlineTimerState.currentLecture?.period || currentClassInfo?.period || null;
+
+                // Source of truth for period times
+                const periodSrc = offlinePeriod || offlineTimerState.currentLecture || currentClassInfo;
+
+                // Compute total period duration in seconds — NO cap
+                const totalSecs = (() => {
+                  if (typeof periodSrc?.startTime === 'string' && typeof periodSrc?.endTime === 'string') {
+                    const [sh, sm] = periodSrc.startTime.split(':').map(Number);
+                    const [eh, em] = periodSrc.endTime.split(':').map(Number);
+                    const dur = ((eh * 60 + em) - (sh * 60 + sm)) * 60;
+                    if (dur > 0) return dur;
+                  }
+                  return 60 * 60; // fallback 60 min
+                })();
+
+                // Time remaining until period ends (wall-clock based)
+                const periodEndRemainSecs = (() => {
+                  if (typeof periodSrc?.endTime !== 'string') return null;
+                  try {
+                    const now = new Date();
+                    const [eh, em] = periodSrc.endTime.split(':').map(Number);
+                    const endMs = new Date(now.getFullYear(), now.getMonth(), now.getDate(), eh, em, 0).getTime();
+                    const diff = Math.floor((endMs - now.getTime()) / 1000);
+                    return diff > 0 ? diff : 0;
+                  } catch { return null; }
+                })();
+
+                // Threshold = pctRequired% of total duration
+                const threshold = Math.ceil(totalSecs * pctRequired / 100);
+                const attended = offlineTimerState.timerSeconds || 0;
+                // 100% = full period duration
+                const pct = Math.min(100, Math.round((attended / totalSecs) * 100));
+                const reached = offlineTimerState.attendanceStatus === 'present' || attended >= threshold;
+                const remainingSecs = Math.max(0, threshold - attended);
+
+                // Format seconds → "Xh Ym" or "Ym" or "Xs"
+                const fmtTime = (secs) => {
+                  if (secs <= 0) return '0 min';
+                  const h = Math.floor(secs / 3600);
+                  const m = Math.floor((secs % 3600) / 60);
+                  const s = secs % 60;
+                  if (h > 0 && m > 0) return `${h}h ${m}m`;
+                  if (h > 0) return `${h}h`;
+                  if (m > 0) return `${m} min`;
+                  return `${s} sec`;
+                };
+
+                const totalFmt = fmtTime(totalSecs);
+                const attendedFmt = fmtTime(attended);
+                const remainFmt = fmtTime(remainingSecs);
+                const thresholdFmt = fmtTime(threshold);
+                const periodEndFmt = periodEndRemainSecs !== null ? fmtTime(periodEndRemainSecs) : null;
+
+                return (
+                  <View style={{ backgroundColor: theme.background, borderRadius: 10, padding: 12, marginBottom: 15 }}>
+                    {/* Header row */}
+                    <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: 4 }}>
+                      <Text style={{ fontSize: 12, color: theme.textSecondary }}>
+                        {periodNum ? `P${periodNum}  |  ` : ''}{pctRequired}% attendance required
+                      </Text>
+                      <Text style={{ fontSize: 12, fontWeight: 'bold', color: reached ? '#22c55e' : '#f59e0b' }}>
+                        {reached ? '✅ Present' : `${pct}%`}
+                      </Text>
+                    </View>
+
+                    {/* Progress bar — 100% = full period, marker at attendance threshold */}
+                    <View style={{ height: 8, backgroundColor: theme.border, borderRadius: 4, overflow: 'hidden', marginBottom: 2 }}>
+                      <View style={{ height: 8, width: `${pct}%`, backgroundColor: reached ? '#22c55e' : '#f59e0b', borderRadius: 4 }} />
+                    </View>
+                    {/* Threshold marker */}
+                    <View style={{ position: 'relative', height: 12, marginBottom: 6 }}>
+                      <View style={{
+                        position: 'absolute',
+                        left: `${pctRequired}%`,
+                        top: 0,
+                        width: 2,
+                        height: 10,
+                        backgroundColor: '#ef4444',
+                        borderRadius: 1,
+                      }} />
+                      <Text style={{
+                        position: 'absolute',
+                        left: `${pctRequired}%`,
+                        top: 0,
+                        fontSize: 9,
+                        color: '#ef4444',
+                        fontWeight: '700',
+                        marginLeft: 3,
+                      }}>{pctRequired}%</Text>
+                    </View>
+
+                    {/* Period total duration + need to attend */}
+                    <Text style={{ fontSize: 11, color: theme.textSecondary, marginBottom: 4 }}>
+                      📅 Period: <Text style={{ fontWeight: '600', color: theme.text }}>{totalFmt}</Text>
+                      {'  '}|{'  '}Need <Text style={{ fontWeight: '600', color: theme.text }}>{thresholdFmt}</Text> to be present
+                    </Text>
+
+                    {/* Period ends in */}
+                    {periodEndFmt !== null && (
+                      <Text style={{ fontSize: 11, color: theme.textSecondary, marginBottom: 6 }}>
+                        🕐 Period ends in: <Text style={{ fontWeight: '600', color: periodEndRemainSecs < 600 ? '#ef4444' : theme.text }}>{periodEndFmt}</Text>
+                        {periodSrc?.endTime ? <Text style={{ color: theme.textSecondary }}> ({periodSrc.endTime})</Text> : null}
+                      </Text>
+                    )}
+
+                    {/* Attended / remaining to mark present */}
+                    {reached ? (
+                      <Text style={{ fontSize: 11, color: '#22c55e', fontWeight: '600', textAlign: 'center' }}>
+                        ✅ Attended {attendedFmt}  |  marked present
+                      </Text>
+                    ) : (
+                      <Text style={{ fontSize: 11, color: '#f59e0b', fontWeight: '600', textAlign: 'center' }}>
+                        ⏱ Attended {attendedFmt}  |  Need {remainFmt} more to be marked present
+                      </Text>
+                    )}
+                  </View>
+                );
+              })()}
+              <View style={{ backgroundColor: theme.background, borderRadius: 10, padding: 12, marginBottom: 15 }}>
+
+                {/* Status row */}
+                <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <Text style={{ fontSize: 12, color: theme.textSecondary }}>Status:</Text>
+                  <Text style={{
+                    fontSize: 12, fontWeight: 'bold',
+                    color: offlineTimerState.isRunning
+                      ? (offlineTimerState.isPaused ? '#f59e0b' : '#22c55e') : '#ef4444'
+                  }}>
+                    {offlineTimerState.isRunning
+                      ? (offlineTimerState.isPaused ? '⏸️ Paused' : '▶️ Running') : '⏹️ Stopped'}
+                  </Text>
+                </View>
+
+                {/* Connection row */}
+                <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 5 }}>
+                  <Text style={{ fontSize: 12, color: theme.textSecondary }}>Connection:</Text>
+                  <View style={{ alignItems: 'flex-end' }}>
+                    <Text style={{
+                      fontSize: 12, fontWeight: 'bold',
+                      color: offlineTimerState.hasInternetConnection && offlineTimerState.isConnectedToAuthorizedWiFi
+                        ? '#22c55e' : offlineTimerState.isConnectedToAuthorizedWiFi ? '#f59e0b' : '#ef4444'
+                    }}>
+                      {offlineTimerState.hasInternetConnection && offlineTimerState.isConnectedToAuthorizedWiFi
+                        ? '🌐 Online' : offlineTimerState.isConnectedToAuthorizedWiFi ? '📱 Offline' : '❌ No WiFi'}
+                    </Text>
+                    {offlineTimerState.__pending_sync > 0 && (
+                      <Text style={{ fontSize: 10, color: '#f59e0b', marginTop: 2 }}>
+                        {offlineTimerState.__pending_sync} pending sync{offlineTimerState.__pending_sync > 1 ? 's' : ''}
+                      </Text>
+                    )}
+                  </View>
+                </View>
+
+                {/* Security Status — from actual verification state */}
+                {offlineTimerState.isRunning && (
+                  <View style={{ marginTop: 8, paddingTop: 8, borderTopWidth: 1, borderTopColor: theme.border }}>
+                    <Text style={{ fontSize: 11, color: theme.textSecondary, textAlign: 'center', marginBottom: 4 }}>
+                      Security Status
+                    </Text>
+                    <View style={{ flexDirection: 'row', justifyContent: 'space-around' }}>
+                      <Text style={{ fontSize: 10, color: offlineTimerState.isConnectedToAuthorizedWiFi ? '#22c55e' : '#ef4444' }}>
+                        📶 WiFi {offlineTimerState.isConnectedToAuthorizedWiFi ? '✓' : '✗'}
+                      </Text>
+                      <Text style={{ fontSize: 10, color: '#22c55e' }}>👤 Face ✓</Text>
+                      <Text style={{ fontSize: 10, color: offlineTimerState.isConnectedToAuthorizedWiFi ? '#22c55e' : '#ef4444' }}>
+                        📍 Location {offlineTimerState.isConnectedToAuthorizedWiFi ? '✓' : '✗'}
+                      </Text>
+                    </View>
+                  </View>
+                )}
+
+                {/* Current period info from offline schedule */}
+                {(() => {
+                  const p = offlinePeriod || offlineTimerState.currentLecture;
+                  if (!p) return null;
+                  return (
+                    <View style={{ marginTop: 8, paddingTop: 8, borderTopWidth: 1, borderTopColor: theme.border }}>
+                      <Text style={{ fontSize: 12, fontWeight: '600', color: theme.text, textAlign: 'center' }}>
+                        📚 {p.subject}{p.period ? ` (Period ${p.period})` : ''}
+                      </Text>
+                      <Text style={{ fontSize: 11, color: theme.textSecondary, textAlign: 'center', marginTop: 2 }}>
+                        {[
+                          p.room && `🚪 ${p.room}`,
+                          (p.teacher || p.teacherName) && `👤 ${p.teacher || p.teacherName}`,
+                          p.startTime && p.endTime && `⏰ ${p.startTime}–${p.endTime}`,
+                        ].filter(Boolean).join('  ')}
+                      </Text>
+                    </View>
+                  );
+                })()}
+
+                {/* Last sync time */}
+                {offlineTimerState.lastSyncTime > 0 && (
+                  <Text style={{ fontSize: 10, color: theme.textSecondary, textAlign: 'center', marginTop: 6 }}>
+                    Last sync: {(() => {
+                      try {
+                        // lastSyncTime is boot-elapsed ms — convert to wall clock
+                        const bootNow = _appGetBootMs();
+                        const elapsedSinceSync = bootNow - offlineTimerState.lastSyncTime;
+                        const wallTime = new Date(Date.now() - elapsedSinceSync);
+                        return wallTime.toLocaleTimeString();
+                      } catch { return '—'; }
+                    })()}
+                  </Text>
+                )}
+              </View>
+
+              {/* Timer Control Button - show when there's an active period */}
+              {((currentClassInfo && currentClassInfo.currentLecture !== 'Break') || 
+                (offlinePeriod && offlinePeriod.subject && !offlinePeriod.isBreak)) && (
+                <TouchableOpacity
+                  style={{
+                    backgroundColor: offlineTimerState.isRunning ? '#ef4444' : '#22c55e',
+                    borderRadius: 12,
+                    padding: 15,
+                    alignItems: 'center',
+                    shadowColor: '#000',
+                    shadowOffset: { width: 0, height: 2 },
+                    shadowOpacity: 0.25,
+                    shadowRadius: 3.84,
+                    elevation: 5,
+                  }}
+                  onPress={handleTimerStartStop}
+                >
+                  <Text style={{
+                    color: '#ffffff',
+                    fontSize: 16,
+                    fontWeight: 'bold',
+                  }}>
+                    {offlineTimerState.isRunning ? '⏹️ STOP TIMER' : '🔐 START TIMER'}
+                  </Text>
+                  {!offlineTimerState.isRunning && (
+                    <Text style={{
+                      color: '#ffffff',
+                      fontSize: 11,
+                      marginTop: 5,
+                      opacity: 0.9,
+                      textAlign: 'center',
+                    }}>
+                      Requires WiFi + Face verification
+                    </Text>
+                  )}
+                </TouchableOpacity>
+              )}
+            </View>
+          )}
+
+          {/* Leave Day Message - Matches frontend_home.md */}
+          {!currentClassInfo && (
+            <View style={{
+              width: '100%',
+              maxWidth: 400,
+              backgroundColor: theme.cardBackground,
+              borderRadius: 12,
+              padding: 14,
+              borderWidth: 2,
+              borderColor: theme.border,
+              marginTop: 10,
+              alignItems: 'center',
+            }}>
+              <Text style={{ fontSize: 13, color: theme.textSecondary, textAlign: 'center' }}>
+                🏖️ It's a leave
+              </Text>
+            </View>
+          )}
+
+          {/* Today's Attendance Summary */}
+          {todayAttendance.lectures.length > 0 && (
+            <View style={{
+              marginTop: 10,
+              width: '100%',
+              maxWidth: 400,
+              backgroundColor: theme.cardBackground,
+              borderRadius: 12,
+              padding: 14,
+              borderWidth: 2,
+              borderColor: theme.border,
+            }}>
+              <Text style={{ color: theme.primary, fontSize: 14, fontWeight: 'bold', marginBottom: 10 }}>
+                📊 Today's Attendance
+              </Text>
+
+              {/* Overall Stats */}
+              <View style={{
+                backgroundColor: todayAttendance.dayPresent ? '#22c55e20' : '#ef444420',
+                borderRadius: 8,
+                padding: 10,
+                marginBottom: 10,
+                borderWidth: 1,
+                borderColor: todayAttendance.dayPresent ? '#22c55e' : '#ef4444'
+              }}>
+                <Text style={{
+                  color: todayAttendance.dayPresent ? '#22c55e' : '#ef4444',
+                  fontSize: 13,
+                  fontWeight: 'bold',
+                  textAlign: 'center'
+                }}>
+                  {todayAttendance.dayPresent ? '✅ Present' : '❌ Absent'} • {todayAttendance.dayPercentage}%
+                </Text>
+                <Text style={{ color: theme.textSecondary, fontSize: 11, textAlign: 'center', marginTop: 3 }}>
+                  {formatTimeHMS(todayAttendance.totalAttended * 60)} attended / {formatTimeHMS(todayAttendance.totalClassTime * 60)} total
+                </Text>
+              </View>
+
+{/* Per Lecture Breakdown */}
+              <Text style={{ color: theme.text, fontSize: 12, fontWeight: '600', marginBottom: 8 }}>
+                Lectures:
+              </Text>
+              {todayAttendance.lectures.map((lecture, index) => (
+                <View key={index} style={{
+                  backgroundColor: theme.background,
+                  borderRadius: 6,
+                  padding: 8,
+                  marginBottom: 6,
+                  borderLeftWidth: 3,
+                  borderLeftColor: lecture.present ? '#22c55e' : '#ef4444'
+                }}>
+                  <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <Text style={{ color: theme.text, fontSize: 12, fontWeight: '600', flex: 1 }}>
+                      {lecture.period || `P${index + 1}`}. {lecture.subject}
+                    </Text>
+                    <Text style={{
+                      color: lecture.present ? '#22c55e' : '#ef4444',
+                      fontSize: 11,
+                      fontWeight: 'bold'
+                    }}>
+                      {lecture.present ? '✓' : '✗'} {lecture.percentage}%
+                    </Text>
+                  </View>
+                  <Text style={{ color: theme.textSecondary, fontSize: 10, marginTop: 2 }}>
+                    {formatTimeHMS(lecture.attended * 60)} / {formatTimeHMS(lecture.total * 60)} • {lecture.startTime}-{lecture.endTime}
+                  </Text>
+                </View>
+              ))}
+            </View>
+          )}
+
+          {/* Overall Attendance Stats */}
+          {(() => {
+            const stats = getAttendanceStats();
+            return stats.totalDays > 0 && (
+              <View style={{
+                marginTop: 10,
+                width: '100%',
+                maxWidth: 400,
+                backgroundColor: theme.cardBackground,
+                borderRadius: 12,
+                padding: 14,
+                borderWidth: 2,
+                borderColor: theme.border,
+              }}>
+                <Text style={{ color: theme.primary, fontSize: 14, fontWeight: 'bold', marginBottom: 10 }}>
+                  📈 Overall Attendance
+                </Text>
+                <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: 7 }}>
+                  <Text style={{ color: theme.textSecondary, fontSize: 12 }}>Days Attended:</Text>
+                  <Text style={{ color: theme.text, fontSize: 12, fontWeight: '600' }}>
+                    {stats.presentDays} / {stats.totalDays}
+                  </Text>
+                </View>
+                <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
+                  <Text style={{ color: theme.textSecondary, fontSize: 12 }}>Attendance:</Text>
+                  <Text style={{
+                    color: stats.attendancePercentage >= 75 ? '#22c55e' : '#ef4444',
+                    fontSize: 12,
+                    fontWeight: 'bold'
+                  }}>
+                    {stats.attendancePercentage}%
+                  </Text>
+                </View>
+              </View>
+            );
+          })()}
+
+
+        </ScrollView>
+
+        {/* Profile Modal */}
+        {showProfile && (
+          <Modal
+            transparent={true}
+            visible={showProfile}
+            animationType="fade"
+            onRequestClose={() => setShowProfile(false)}
+          >
+            <View style={styles.modalOverlay}>
+              <Animated.View style={[styles.profileModalContent, {
+                backgroundColor: theme.cardBackground,
+                borderColor: theme.border,
+                transform: [{ scale: profileScaleAnim }]
+              }]}>
+                <ScrollView>
+                  {/* Header */}
+                  <View style={[styles.modalHeader, { borderBottomColor: theme.border }]}>
+                    <Text style={[styles.modalTitle, { color: theme.primary }]}>👤 Profile</Text>
+                    <TouchableOpacity onPress={() => setShowProfile(false)}>
+                      <Text style={styles.modalClose}>✕</Text>
+                    </TouchableOpacity>
+                  </View>
+
+                  {/* Profile Avatar */}
+                  <View style={{ alignItems: 'center', paddingVertical: 30 }}>
+                    <View style={{
+                      width: 120,
+                      height: 120,
+                      borderRadius: 60,
+                      backgroundColor: theme.primary,
+                      justifyContent: 'center',
+                      alignItems: 'center',
+                      borderWidth: 4,
+                      borderColor: theme.border,
+                      marginBottom: 15,
+                      overflow: 'hidden',
+                    }}>
+                      {userData?.photoUrl ? (
+                        <Image
+                          source={{ uri: userData.photoUrl }}
+                          style={{ width: '100%', height: '100%' }}
+                          resizeMode="cover"
+                          onError={(e) => console.log('❌ Student profile modal photo error:', e.nativeEvent.error)}
+                          onLoad={() => console.log('✅ Student profile modal photo loaded')}
+                        />
+                      ) : (
+                        <Text style={{ fontSize: 48, color: isDarkTheme ? '#0a1628' : '#ffffff', fontWeight: 'bold' }}>
+                          {getInitials(userData?.name || studentName || 'User')}
+                        </Text>
+                      )}
+                    </View>
+                    <Text style={{ fontSize: 24, fontWeight: 'bold', color: theme.text }}>
+                      {userData?.name || studentName || 'User'}
+                    </Text>
+                    <Text style={{ fontSize: 14, color: theme.textSecondary, marginTop: 5 }}>
+                      🎓 Student
+                    </Text>
+                  </View>
+
+                  {/* Profile Information */}
+                  <View style={[styles.detailSection, { borderBottomColor: theme.border + '40' }]}>
+                    <Text style={[styles.sectionTitle, { color: theme.primary }]}>📋 Personal Information</Text>
+
+                    <View style={styles.infoRow}>
+                      <Text style={[styles.infoLabel, { color: theme.textSecondary }]}>Name:</Text>
+                      <Text style={[styles.infoValue, { color: theme.text }]}>{userData?.name || studentName || 'N/A'}</Text>
+                    </View>
+
+                    <View style={styles.infoRow}>
+                      <Text style={[styles.infoLabel, { color: theme.textSecondary }]}>Enrollment No:</Text>
+                      <Text style={[styles.infoValue, { color: theme.text }]}>{userData?.enrollmentNo || loginId || 'N/A'}</Text>
+                    </View>
+                    <View style={styles.infoRow}>
+                      <Text style={[styles.infoLabel, { color: theme.textSecondary }]}>Course:</Text>
+                      <Text style={[styles.infoValue, { color: theme.text }]}>{userData?.course || branch || 'N/A'}</Text>
+                    </View>
+                    <View style={styles.infoRow}>
+                      <Text style={[styles.infoLabel, { color: theme.textSecondary }]}>Semester:</Text>
+                      <Text style={[styles.infoValue, { color: theme.text }]}>{userData?.semester || semester || 'N/A'}</Text>
+                    </View>
+                    {userData?.email && (
+                      <View style={styles.infoRow}>
+                        <Text style={[styles.infoLabel, { color: theme.textSecondary }]}>Email:</Text>
+                        <Text style={[styles.infoValue, { color: theme.text }]}>{userData.email}</Text>
+                      </View>
+                    )}
+                    {userData?.phone && (
+                      <View style={styles.infoRow}>
+                        <Text style={[styles.infoLabel, { color: theme.textSecondary }]}>Phone:</Text>
+                        <Text style={[styles.infoValue, { color: theme.text }]}>{userData.phone}</Text>
+                      </View>
+                    )}
+                  </View>
+
+                  {/* Actions */}
+                  <View style={{ padding: 20 }}>
+                    <TouchableOpacity
+                      style={[styles.logoutButton, { backgroundColor: '#ff4444' }]}
+                      onPress={() => {
+                        setShowProfile(false);
+                        setTimeout(() => handleLogout(), 300);
+                      }}
+                    >
+                      <Text style={styles.logoutButtonText}>🚪 Logout</Text>
+                    </TouchableOpacity>
+                  </View>
+                </ScrollView>
+              </Animated.View>
+            </View>
+          </Modal>
+        )}
+
+        {/* Face Verification Modal - REMOVED */}
+
+        {/* Lanyard Card */}
+        <LanyardCard
+          visible={showLanyard}
+          onClose={() => setShowLanyard(false)}
+          userData={userData}
+          theme={theme}
+          onOpenFullProfile={() => {
+            setShowLanyard(false);
+            setTimeout(() => setShowProfile(true), 300);
+          }}
+        />
+
+
+
+        {/* Floating Brand Button - Only on Home tab */}
+        {activeTab === 'home' && (
+          <FloatingBrandButton theme={{ ...theme, isDark: isDarkTheme }} />
+        )}
+
+        {/* Offline Toast Message */}
+        {isOffline && (
+          <Animated.View style={{
+            position: 'absolute',
+            bottom: 100,
+            left: 20,
+            right: 20,
+            backgroundColor: '#ef4444',
+            padding: 16,
+            borderRadius: 12,
+            flexDirection: 'row',
+            alignItems: 'center',
+            gap: 12,
+            elevation: 10,
+            shadowColor: '#000',
+            shadowOffset: { width: 0, height: 4 },
+            shadowOpacity: 0.3,
+            shadowRadius: 8,
+          }}>
+            <Text style={{ fontSize: 24 }}>📡</Text>
+            <View style={{ flex: 1 }}>
+              <Text style={{ color: '#fff', fontWeight: 'bold', fontSize: 14 }}>
+                App is offline
+              </Text>
+              <Text style={{ color: '#fff', fontSize: 12, marginTop: 2 }}>
+                Check your internet connection
+              </Text>
+            </View>
+          </Animated.View>
+        )}
+
+        {/* Theme Picker Modal */}
+        <Modal
+          visible={showThemePicker}
+          transparent
+          animationType="slide"
+          onRequestClose={() => setShowThemePicker(false)}
+        >
+          <TouchableOpacity
+            style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'flex-end' }}
+            activeOpacity={1}
+            onPress={() => setShowThemePicker(false)}
+          >
+            <View style={{ backgroundColor: theme.cardBackground, borderTopLeftRadius: 24, borderTopRightRadius: 24, padding: 20, paddingBottom: 40 }}
+              onStartShouldSetResponder={() => true}
+            >
+              <Text style={{ color: theme.text, fontSize: 18, fontWeight: 'bold', marginBottom: 4 }}>🎨 Choose Theme</Text>
+              <Text style={{ color: theme.textSecondary, fontSize: 12, marginBottom: 16 }}>Pick a look that feels right</Text>
+              <ScrollView showsVerticalScrollIndicator={false} style={{ maxHeight: 420 }}>
+                {THEME_GROUPS.map((group) => (
+                  <View key={group.label} style={{ marginBottom: 16 }}>
+                    <Text style={{ color: theme.textSecondary, fontSize: 11, fontWeight: '700', letterSpacing: 1, marginBottom: 8, textTransform: 'uppercase' }}>
+                      {group.label}
+                    </Text>
+                    <View style={{ flexDirection: 'row', gap: 10 }}>
+                      {group.keys.map((key) => {
+                        const t = THEMES[key];
+                        const isActive = themeMode === key;
+                        return (
+                          <TouchableOpacity
+                            key={key}
+                            onPress={() => selectTheme(key)}
+                            style={{ flex: 1, borderRadius: 14, overflow: 'hidden', borderWidth: isActive ? 2 : 1, borderColor: isActive ? t.primary : t.border }}
+                          >
+                            <View style={{ backgroundColor: t.background, padding: 8, alignItems: 'center' }}>
+                              <View style={{ width: '100%', backgroundColor: t.cardBackground, borderRadius: 6, padding: 5, marginBottom: 5, borderWidth: 1, borderColor: t.border }}>
+                                <View style={{ width: '65%', height: 5, backgroundColor: t.primary, borderRadius: 3, marginBottom: 3 }} />
+                                <View style={{ width: '45%', height: 3, backgroundColor: t.textSecondary, borderRadius: 2 }} />
+                              </View>
+                              <Text style={{ fontSize: 18 }}>{t.emoji}</Text>
+                            </View>
+                            <View style={{ backgroundColor: t.cardBackground, paddingVertical: 6, paddingHorizontal: 4, alignItems: 'center' }}>
+                              <Text style={{ color: t.text, fontSize: 10, fontWeight: '600', textAlign: 'center' }} numberOfLines={1}>{t.label}</Text>
+                              {isActive && <Text style={{ color: t.primary, fontSize: 9, marginTop: 1 }}>✓ Active</Text>}
+                            </View>
+                          </TouchableOpacity>
+                        );
+                      })}
+                    </View>
+                  </View>
+                ))}
+              </ScrollView>
+            </View>
+          </TouchableOpacity>
+        </Modal>
+
+        {/* Bottom Navigation */}
+        <BottomNavigation
+          theme={theme}
+          activeTab={activeTab}
+          onTabChange={setActiveTab}
+          userRole={selectedRole}
+          notificationBadge={notificationBadge}
+        />
+
+        {/* Party Popper — shown when attendance threshold is reached */}
+        {showPartyPopper && <PartyPopper />}
+
+        {/* Toast notifications */}
+        <ToastContainer />
+      </View>
+    );
+  }
+}
+
+// ── Party Popper component ────────────────────────────────────────────────────
+const EMOJIS = ['🎉', '🎊', '✨', '🌟', '💥', '🎈', '🥳', '⭐', '🎆', '🎇'];
+const PARTICLE_COUNT = 18;
+
+function PartyPopper() {
+  const particles = useRef(
+    Array.from({ length: PARTICLE_COUNT }, (_, i) => ({
+      anim: new Animated.Value(0),
+      angle: (i / PARTICLE_COUNT) * 2 * Math.PI,
+      emoji: EMOJIS[i % EMOJIS.length],
+      dist: 120 + Math.random() * 80,
+      size: 18 + Math.floor(Math.random() * 14),
+    }))
+  ).current;
+
+  useEffect(() => {
+    const anim = Animated.stagger(30, particles.map(p =>
+      Animated.sequence([
+        Animated.timing(p.anim, { toValue: 1, duration: 700, useNativeDriver: true }),
+        Animated.timing(p.anim, { toValue: 0, duration: 600, delay: 800, useNativeDriver: true }),
+      ])
+    ));
+    anim.start();
+    return () => {
+      anim.stop();
+      particles.forEach(p => p.anim.stopAnimation());
+    };
+  }, []);
+
+  return (
+    <View pointerEvents="none" style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, alignItems: 'center', justifyContent: 'center', zIndex: 9999 }}>
+      {/* Central badge */}
+      <Animated.View style={{ alignItems: 'center', opacity: particles[0].anim, transform: [{ scale: particles[0].anim.interpolate({ inputRange: [0, 0.5, 1], outputRange: [0.3, 1.3, 1] }) }] }}>
+        <View style={{ backgroundColor: '#22c55e', borderRadius: 50, paddingHorizontal: 24, paddingVertical: 12, shadowColor: '#22c55e', shadowOpacity: 0.8, shadowRadius: 20, elevation: 20 }}>
+          <Text style={{ fontSize: 22, fontWeight: '800', color: '#fff' }}>🎉 Attendance Marked!</Text>
+        </View>
+      </Animated.View>
+
+      {/* Burst particles */}
+      {particles.map((p, i) => (
+        <Animated.Text
+          key={i}
+          style={{
+            position: 'absolute',
+            fontSize: p.size,
+            opacity: p.anim,
+            transform: [
+              { translateX: p.anim.interpolate({ inputRange: [0, 1], outputRange: [0, Math.cos(p.angle) * p.dist] }) },
+              { translateY: p.anim.interpolate({ inputRange: [0, 1], outputRange: [0, Math.sin(p.angle) * p.dist - 40] }) },
+              { scale: p.anim.interpolate({ inputRange: [0, 0.5, 1], outputRange: [0, 1.2, 0.8] }) },
+            ],
+          }}
+        >
+          {p.emoji}
+        </Animated.Text>
+      ))}
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  container: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 20,
+  },
+  loginContainer: {
+    width: '100%',
+    maxWidth: 400,
+    alignItems: 'center',
+  },
+  loginForm: {
+    width: '100%',
+    backgroundColor: '#0d1f3c',
+    borderRadius: 20,
+    padding: 30,
+    borderWidth: 2,
+    borderColor: '#00d9ff',
+  },
+  loginLabel: {
+    color: '#00d9ff',
+    fontSize: 14,
+    marginBottom: 8,
+    fontWeight: '600',
+  },
+  loginInput: {
+    backgroundColor: '#0a1628',
+    borderWidth: 2,
+    borderColor: '#00d9ff',
+    borderRadius: 10,
+    padding: 15,
+    fontSize: 16,
+    color: '#00f5ff',
+  },
+  loginError: {
+    color: '#ff4444',
+    fontSize: 14,
+    marginTop: 15,
+    textAlign: 'center',
+  },
+  loginButton: {
+    marginTop: 30,
+    width: '100%',
+  },
+  loginButtonInner: {
+    backgroundColor: '#00f5ff',
+    paddingVertical: 15,
+    borderRadius: 15,
+    alignItems: 'center',
+    elevation: 10,
+  },
+  loginButtonText: {
+    color: '#0a1628',
+    fontSize: 18,
+    fontWeight: 'bold',
+  },
+  loginHint: {
+    color: '#00d9ff80',
+    fontSize: 12,
+    marginTop: 20,
+    textAlign: 'center',
+    lineHeight: 18,
+  },
+  teacherHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+    width: '100%',
+    paddingHorizontal: 20,
+    marginBottom: 15,
+  },
+  iconButton: {
+    width: 40,
+    height: 40,
+    borderRadius: 10,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginTop: 5,
+  },
+  themeButton: {
+    backgroundColor: '#fbbf24',
+    paddingVertical: 8,
+    paddingHorizontal: 15,
+    borderRadius: 10,
+    marginTop: 5,
+  },
+  themeButtonText: {
+    fontSize: 18,
+  },
+  logoutButton: {
+    backgroundColor: '#ff4444',
+    paddingVertical: 8,
+    paddingHorizontal: 15,
+    borderRadius: 10,
+    marginTop: 5,
+  },
+  logoutButtonText: {
+    color: '#ffffff',
+    fontSize: 14,
+    fontWeight: 'bold',
+  },
+  statsContainer: {
+    flexDirection: 'row',
+    justifyContent: 'space-around',
+    width: '100%',
+    paddingHorizontal: 10,
+    marginBottom: 15,
+  },
+  statCard: {
+    backgroundColor: '#0d1f3c',
+    borderWidth: 2,
+    borderRadius: 12,
+    padding: 12,
+    alignItems: 'center',
+    minWidth: 70,
+  },
+  statNumber: {
+    fontSize: 24,
+    fontWeight: 'bold',
+    color: '#00f5ff',
+  },
+  statLabel: {
+    fontSize: 11,
+    color: '#00d9ff',
+    marginTop: 4,
+  },
+  percentageContainer: {
+    backgroundColor: '#0d1f3c',
+    borderWidth: 2,
+    borderColor: '#00d9ff',
+    borderRadius: 12,
+    paddingVertical: 10,
+    paddingHorizontal: 20,
+    marginHorizontal: 20,
+    marginBottom: 15,
+    alignItems: 'center',
+  },
+  percentageText: {
+    fontSize: 16,
+    fontWeight: 'bold',
+    color: '#00f5ff',
+  },
+  listHeader: {
+    paddingHorizontal: 20,
+    paddingVertical: 10,
+    borderBottomWidth: 2,
+    borderBottomColor: '#00d9ff',
+    marginBottom: 10,
+  },
+  listHeaderText: {
+    fontSize: 18,
+    fontWeight: 'bold',
+    color: '#00f5ff',
+  },
+  listHeaderSubtext: {
+    fontSize: 12,
+    color: '#00d9ff80',
+    marginTop: 3,
+  },
+  studentId: {
+    fontSize: 12,
+    color: '#00d9ff80',
+    marginTop: 3,
+  },
+  studentFooter: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginTop: 5,
+  },
+  runningIndicator: {
+    fontSize: 12,
+    color: '#00ff88',
+    fontWeight: 'bold',
+  },
+  emptyContainer: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 60,
+  },
+  emptyIcon: {
+    fontSize: 60,
+    marginBottom: 15,
+  },
+  emptySubtext: {
+    color: '#00d9ff80',
+    fontSize: 13,
+    textAlign: 'center',
+    marginTop: 8,
+    paddingHorizontal: 40,
+  },
+  tapHint: {
+    color: '#00d9ff80',
+    fontSize: 11,
+    textAlign: 'right',
+    marginTop: 8,
+  },
+  modalOverlay: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: 'rgba(0, 0, 0, 0.85)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 20,
+  },
+  modalContent: {
+    backgroundColor: '#0d1f3c',
+    borderRadius: 20,
+    width: '100%',
+    maxHeight: '90%',
+    borderWidth: 2,
+    borderColor: '#00d9ff',
+  },
+  profileModalContent: {
+    backgroundColor: '#0d1f3c',
+    borderRadius: 20,
+    width: '90%',
+    maxWidth: 500,
+    maxHeight: '85%',
+    borderWidth: 2,
+    borderColor: '#00d9ff',
+  },
+  modalHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    padding: 20,
+    borderBottomWidth: 2,
+    borderBottomColor: '#00d9ff',
+  },
+  modalTitle: {
+    fontSize: 22,
+    fontWeight: 'bold',
+    color: '#00f5ff',
+  },
+  modalClose: {
+    fontSize: 28,
+    color: '#ff4444',
+    fontWeight: 'bold',
+  },
+  loadingContainer: {
+    padding: 40,
+    alignItems: 'center',
+  },
+  loadingText: {
+    color: '#00d9ff',
+    fontSize: 16,
+  },
+  detailSection: {
+    padding: 20,
+    borderBottomWidth: 1,
+    borderBottomColor: '#00d9ff40',
+  },
+  sectionTitle: {
+    fontSize: 18,
+    fontWeight: 'bold',
+    color: '#00f5ff',
+    marginBottom: 15,
+  },
+  infoRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    paddingVertical: 8,
+  },
+  infoLabel: {
+    color: '#00d9ff',
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  infoValue: {
+    color: '#ffffff',
+    fontSize: 14,
+    flex: 1,
+    textAlign: 'right',
+  },
+  statsGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    justifyContent: 'space-between',
+  },
+  statBox: {
+    width: '48%',
+    backgroundColor: '#0a1628',
+    borderRadius: 12,
+    padding: 15,
+    marginBottom: 10,
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#00d9ff',
+  },
+  recordRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    paddingVertical: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: '#00d9ff20',
+  },
+  recordDate: {
+    color: '#00d9ff',
+    fontSize: 14,
+  },
+  recordStatus: {
+    fontSize: 14,
+    fontWeight: 'bold',
+  },
+  glowText: {
+    fontWeight: 'bold',
+    marginBottom: 10,
+    textShadowColor: '#00f5ff',
+    textShadowOffset: { width: 0, height: 0 },
+    textShadowRadius: 20,
+  },
+  roleContainer: {
+    flexDirection: 'row',
+    gap: 30,
+  },
+  roleButton: {
+    width: 140,
+    height: 160,
+    borderRadius: 20,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  roleIcon: {
+    fontSize: 60,
+    marginBottom: 15,
+  },
+  roleText: {
+    fontSize: 20,
+    fontWeight: 'bold',
+  },
+  inputContainer: {
+    width: '100%',
+    borderWidth: 2,
+    borderRadius: 15,
+    padding: 15,
+    marginBottom: 30,
+    elevation: 10,
+  },
+  input: {
+    fontSize: 20,
+    textAlign: 'center',
+  },
+  submitButton: {
+    backgroundColor: '#00f5ff',
+    paddingVertical: 15,
+    paddingHorizontal: 40,
+    borderRadius: 15,
+    elevation: 10,
+  },
+  submitButtonText: {
+    color: '#0a1628',
+    fontSize: 18,
+    fontWeight: 'bold',
+  },
+  studentNameDisplay: {
+    fontSize: 18,
+    color: '#00d9ff',
+    marginBottom: 30,
+  },
+  buttonContainer: {
+    flexDirection: 'row',
+    gap: 20,
+  },
+  button: {
+    paddingVertical: 15,
+    paddingHorizontal: 30,
+    borderRadius: 15,
+    minWidth: 120,
+    alignItems: 'center',
+    elevation: 10,
+  },
+  buttonText: {
+    fontWeight: 'bold',
+  },
+  studentList: {
+    width: '100%',
+    flex: 1,
+  },
+  studentListContent: {
+    paddingBottom: 20,
+  },
+  studentCard: {
+    borderWidth: 2,
+    borderRadius: 15,
+    padding: 20,
+    marginBottom: 15,
+    elevation: 10,
+  },
+  studentHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 10,
+  },
+  studentName: {
+    fontSize: 20,
+    fontWeight: 'bold',
+    color: '#00f5ff',
+  },
+  statusBadge: {
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 10,
+  },
+  statusText: {
+    fontSize: 12,
+    fontWeight: 'bold',
+    color: '#0a1628',
+  },
+  timerText: {
+    fontSize: 32,
+    fontWeight: 'bold',
+    color: '#00d9ff',
+    textAlign: 'center',
+  },
+  emptyText: {
+    color: '#00d9ff',
+    fontSize: 16,
+    textAlign: 'center',
+    marginTop: 50,
+  },
+  timetableHeader: {
+    alignItems: 'center',
+    paddingVertical: 15,
+    borderBottomWidth: 2,
+    borderBottomColor: '#00d9ff',
+  },
+  timetableScrollHorizontal: {
+    flex: 1,
+    width: '100%',
+  },
+  timetableGrid: {
+    padding: 10,
+  },
+  gridRow: {
+    flexDirection: 'row',
+  },
+  gridCell: {
+    borderWidth: 1,
+    borderColor: '#00d9ff',
+    padding: 8,
+    justifyContent: 'center',
+    alignItems: 'center',
+    minHeight: 60,
+  },
+  cornerCell: {
+    width: 70,
+    backgroundColor: '#0d1f3c',
+  },
+  cornerText: {
+    color: '#00d9ff',
+    fontSize: 10,
+    fontWeight: 'bold',
+    textAlign: 'center',
+  },
+  headerCell: {
+    width: 90,
+    backgroundColor: '#0d1f3c',
+  },
+  periodHeaderText: {
+    color: '#00f5ff',
+    fontSize: 14,
+    fontWeight: 'bold',
+  },
+  timeText: {
+    color: '#00bfff',
+    fontSize: 9,
+    marginTop: 2,
+  },
+  dayCell: {
+    width: 70,
+    backgroundColor: '#0d1f3c',
+  },
+  dayText: {
+    color: '#00f5ff',
+    fontSize: 13,
+    fontWeight: 'bold',
+  },
+  dataCell: {
+    width: 90,
+    backgroundColor: '#0a1628',
+
+  },
+  breakCell: {
+    backgroundColor: '#1a2a3a',
+  },
+  subjectTextSmall: {
+    color: '#00f5ff',
+    fontSize: 11,
+    fontWeight: 'bold',
+    textAlign: 'center',
+  },
+  roomTextSmall: {
+    color: '#00d9ff',
+    fontSize: 9,
+    marginTop: 2,
+    textAlign: 'center',
+  },
+  breakTextSmall: {
+    color: '#00bfff',
+    fontSize: 20,
+  },
+  editModal: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: 'rgba(0, 0, 0, 0.8)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 20,
+  },
+  editModalContent: {
+    backgroundColor: '#0d1f3c',
+    borderRadius: 15,
+    padding: 20,
+    width: '90%',
+    maxWidth: 400,
+    borderWidth: 2,
+    borderColor: '#00d9ff',
+  },
+  editModalTitle: {
+    fontSize: 22,
+    fontWeight: 'bold',
+    color: '#00f5ff',
+    textAlign: 'center',
+    marginBottom: 5,
+  },
+  editModalSubtitle: {
+    fontSize: 14,
+    color: '#00d9ff',
+    textAlign: 'center',
+    marginBottom: 20,
+  },
+  editInput: {
+    backgroundColor: '#0a1628',
+    borderWidth: 1,
+    borderColor: '#00d9ff',
+    borderRadius: 10,
+    padding: 12,
+    marginBottom: 15,
+    color: '#00f5ff',
+    fontSize: 16,
+  },
+  editModalButtons: {
+    flexDirection: 'row',
+    gap: 10,
+    marginTop: 10,
+  },
+  editModalButton: {
+    flex: 1,
+    backgroundColor: '#00f5ff',
+    padding: 12,
+    borderRadius: 10,
+    alignItems: 'center',
+  },
+  editModalCancelButton: {
+    backgroundColor: '#ff4444',
+  },
+  editModalButtonText: {
+    color: '#0a1628',
+    fontSize: 16,
+    fontWeight: 'bold',
+  },
+  editModalHint: {
+    fontSize: 11,
+    color: '#00d9ff',
+    textAlign: 'center',
+    marginTop: 15,
+  },
+  bannerWrapper: {
+    paddingHorizontal: 20,
+    paddingVertical: 10,
+    width: '100%',
+    alignSelf: 'center',
+    maxWidth: 768,
+  },
+  bannerContainer: {
+    borderRadius: 20,
+    borderWidth: 1.5,
+    overflow: 'hidden',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.05,
+    shadowRadius: 12,
+    elevation: 3,
+  },
+  bannerInfo: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    padding: 16,
+    gap: 14,
+  },
+  bannerIndicator: {
+    width: 4,
+    height: 40,
+    borderRadius: 2,
+  },
+  bannerLabel: {
+    fontSize: 10,
+    fontWeight: '800',
+    textTransform: 'uppercase',
+    letterSpacing: 1,
+    marginBottom: 2,
+  },
+  bannerTitle: {
+    fontSize: 18,
+    fontWeight: '800',
+    letterSpacing: -0.5,
+  },
+  bannerSubtext: {
+    fontSize: 12,
+    fontWeight: '500',
+    marginTop: 1,
+  },
+  bannerButton: {
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 10,
+  },
+  bannerButtonText: {
+    color: '#fff',
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  wifiWrapper: {
+    paddingHorizontal: 20,
+    marginBottom: 10,
+    width: '100%',
+    alignSelf: 'center',
+    maxWidth: 768,
+  },
+  wifiContainer: {
+    padding: 10,
+    borderRadius: 14,
+    borderWidth: 1,
+    alignItems: 'center',
+  },
+  wifiText: {
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  wifiReason: {
+    fontSize: 10,
+    fontWeight: '500',
+    marginTop: 2,
+  },
+  emptyBannerWrapper: {
+    paddingHorizontal: 20,
+    paddingVertical: 15,
+    width: '100%',
+    alignSelf: 'center',
+    maxWidth: 768,
+  },
+  emptyBannerContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    padding: 16,
+    borderRadius: 20,
+    borderWidth: 1.5,
+    gap: 16,
+    borderStyle: 'dashed',
+  },
+  emptyBannerIcon: {
+    width: 54,
+    height: 54,
+    borderRadius: 16,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  emptyBannerTitle: {
+    fontSize: 16,
+    fontWeight: '800',
+  },
+  emptyBannerSubtext: {
+    fontSize: 12,
+    fontWeight: '500',
+    marginTop: 2,
+  },
+  setClassBtnWrapper: {
+    paddingHorizontal: 20,
+    paddingBottom: 10,
+    width: '100%',
+    alignSelf: 'center',
+    maxWidth: 768,
+  },
+  setClassBtn: {
+    borderRadius: 14,
+    borderWidth: 1,
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  setClassBtnContent: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  setClassBtnText: {
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 20,
+  },
+  classSetupContainer: {
+    width: '90%',
+    maxWidth: 400,
+    borderRadius: 24,
+    padding: 24,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 10 },
+    shadowOpacity: 0.15,
+    shadowRadius: 20,
+    elevation: 8,
+  },
+  modalHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 20,
+  },
+  modalTitle: {
+    fontSize: 20,
+    fontWeight: '800',
+  },
+  sectionLabel: {
+    fontSize: 12,
+    fontWeight: '700',
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+    marginBottom: 8,
+  },
+  switcherContainer: {
+    flexDirection: 'row',
+    borderRadius: 12,
+    padding: 4,
+    marginBottom: 16,
+  },
+  switcherButton: {
+    flex: 1,
+    paddingVertical: 8,
+    alignItems: 'center',
+    borderRadius: 9,
+  },
+  switcherActive: {
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 4,
+    elevation: 2,
+  },
+  switcherText: {
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  periodSelectRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 12,
+  },
+  periodValueText: {
+    fontSize: 16,
+    fontWeight: '700',
+  },
+  dropdownTrigger: {
+    borderWidth: 1,
+    borderRadius: 10,
+    paddingVertical: 6,
+    paddingHorizontal: 12,
+  },
+  autoPeriodBadge: {
+    fontSize: 12,
+    fontWeight: '700',
+    borderRadius: 8,
+    paddingVertical: 4,
+    paddingHorizontal: 10,
+  },
+  periodGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+    borderWidth: 1,
+    borderRadius: 12,
+    padding: 12,
+    marginBottom: 16,
+  },
+  periodGridItem: {
+    width: '22%',
+    aspectRatio: 1.2,
+    borderWidth: 1,
+    borderRadius: 8,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  roomDropdownTrigger: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderRadius: 12,
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+  },
+  roomDropdownList: {
+    borderWidth: 1,
+    borderRadius: 12,
+    marginTop: 8,
+    maxHeight: 320,
+    overflow: 'hidden',
+  },
+  roomDropdownItem: {
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    borderBottomWidth: 1,
+  },
+  modalActions: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    gap: 12,
+    marginTop: 24,
+  },
+  cancelBtn: {
+    flex: 1,
+    borderWidth: 1,
+    borderRadius: 12,
+    paddingVertical: 12,
+    alignItems: 'center',
+  },
+  saveBtn: {
+    flex: 2,
+    borderRadius: 12,
+    paddingVertical: 12,
+    alignItems: 'center',
+  },
+  paginationRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingVertical: 10,
+    paddingHorizontal: 16,
+    borderTopWidth: 1,
+  },
+  pageBtn: {
+    paddingVertical: 6,
+    paddingHorizontal: 12,
+  },
+  pageBtnDisabled: {
+    opacity: 0.5,
+  },
+  pageBtnText: {
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  pageInfoText: {
+    fontSize: 13,
+    fontWeight: '600',
+  },
+});

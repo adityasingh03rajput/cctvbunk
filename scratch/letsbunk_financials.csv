@@ -1,0 +1,33 @@
+LINE ITEM,FY 2025-26,FY 2026-27,FY 2027-28,FY 2028-29,FY 2029-30
+
+YOUR STARTUP,,,,,
+Startup Name,LetsBunk,,,,
+Founder(s),<your name>,,,,
+Sector / Industry,EdTech / Attendance-Tech,,,,
+Stage,Pre-revenue,,,,
+City,<your city>,,,,
+Funding Raised So Far,Rs. 0 (Bootstrapped),,,,
+
+COLLEGES ONBOARDED,0,8,50,200,500
+AVG STUDENTS PER COLLEGE,6000,6000,6000,6000,6000
+PRICING (Rs. per student per month),10,10,10,10,10
+
+KEY METRICS,,,,,
+Total Revenue (Rs.),0,5760000,36000000,144000000,360000000
+Gross Profit (Rs.),0,4896000,30600000,126720000,324000000
+EBITDA (Rs.),-1600000,2396000,24600000,106720000,274000000
+Gross Margin %,N/A,85%,85%,88%,90%
+EBITDA Margin %,N/A,42%,68%,74%,76%
+
+FUNDING ASK,,,,,
+Amount Sought (Rs.),4000000,,,,
+Purpose / Use of Funds,Product Deployment 40% - Sales and Marketing 30% - Team Hiring 30%,,,,
+Current Valuation (Rs.),15000000,,,,
+Expected Valuation in 3 Years (Rs.),150000000,,,,
+Previous Investors,None,,,,
+
+KEY ASSUMPTIONS,,,,,
+Revenue assumption / pricing logic,Rs. 10 per student per month billed to institution. 6000 avg students per college. B2B SaaS model.,,,,
+Primary cost driver,Engineering salaries and cloud infrastructure (MongoDB - Cloudinary),,,,
+Growth driver,Direct outreach to college administrations across India - first-mover advantage in hardware-locked attendance verification globally,,,,
+Key risk and how you will manage it,Slow institutional sales cycles - mitigated by offering free pilot onboarding and offline-first architecture requiring zero IT dependency,,,,

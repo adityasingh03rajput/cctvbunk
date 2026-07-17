@@ -1,0 +1,960 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>⚡ Live Student Status Dashboard</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        :root {
+            --primary: #00d9ff;
+            --primary-dark: #00a8cc;
+            --secondary: #7c3aed;
+            --bg-dark: #0a0e27;
+            --bg-card: #1a1f3a;
+            --bg-hover: #252b4a;
+            --text-primary: #ffffff;
+            --text-secondary: #a0aec0;
+            --border: #2d3748;
+            --success: #10b981;
+            --warning: #f59e0b;
+            --danger: #ef4444;
+            --teal: #00f2fe;
+            --shadow: rgba(0, 0, 0, 0.3);
+        }
+
+        [data-theme="light"] {
+            --primary: #030213;
+            --primary-dark: #1a1a2e;
+            --secondary: #3B82F6;
+            --bg-dark: #E8DCC4;
+            --bg-card: #DDD0B3;
+            --bg-hover: #C8B99A;
+            --text-primary: #030213;
+            --text-secondary: rgba(3, 2, 19, 0.6);
+            --border: rgba(0, 0, 0, 0.1);
+            --success: #16a34a;
+            --warning: #d97706;
+            --danger: #D4183D;
+            --teal: #0d9488;
+            --shadow: rgba(0, 0, 0, 0.1);
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: var(--bg-dark);
+            color: var(--text-primary);
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            overflow-x: hidden;
+            transition: background 0.3s, color 0.3s;
+        }
+
+        /* Header */
+        header {
+            background: var(--bg-card);
+            border-bottom: 1px solid var(--border);
+            padding: 20px 30px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            box-shadow: 0 4px 12px var(--shadow);
+            position: sticky;
+            top: 0;
+            z-index: 100;
+        }
+
+        .header-title-container {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .header-icon {
+            font-size: 28px;
+            animation: pulse 2s infinite;
+        }
+
+        h1 {
+            font-size: 22px;
+            font-weight: 700;
+            background: linear-gradient(135deg, var(--primary), var(--teal));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        .controls-container {
+            display: flex;
+            align-items: center;
+            gap: 20px;
+        }
+
+        /* Toggle switch */
+        .sync-container {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            background: var(--bg-hover);
+            padding: 6px 12px;
+            border-radius: 20px;
+            border: 1px solid var(--border);
+        }
+
+        .sync-label {
+            font-size: 12px;
+            font-weight: 600;
+            color: var(--text-secondary);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .switch {
+            position: relative;
+            display: inline-block;
+            width: 38px;
+            height: 20px;
+        }
+
+        .switch input {
+            opacity: 0;
+            width: 0;
+            height: 0;
+        }
+
+        .slider {
+            position: absolute;
+            cursor: pointer;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background-color: var(--border);
+            transition: .3s;
+            border-radius: 20px;
+        }
+
+        .slider:before {
+            position: absolute;
+            content: "";
+            height: 14px;
+            width: 14px;
+            left: 3px;
+            bottom: 3px;
+            background-color: white;
+            transition: .3s;
+            border-radius: 50%;
+        }
+
+        input:checked + .slider {
+            background-color: var(--success);
+        }
+
+        input:checked + .slider:before {
+            transform: translateX(18px);
+        }
+
+        .pulse-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: var(--success);
+            display: inline-block;
+            margin-right: 4px;
+        }
+
+        .pulse-active {
+            animation: blink 1.5s infinite;
+        }
+
+        /* Container */
+        .container {
+            flex: 1;
+            max-width: 1400px;
+            width: 100%;
+            margin: 0 auto;
+            padding: 24px;
+            display: flex;
+            flex-direction: column;
+            gap: 24px;
+        }
+
+        /* Stats Grid */
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 16px;
+        }
+
+        .stat-card {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 20px;
+            display: flex;
+            align-items: center;
+            gap: 16px;
+            transition: transform 0.2s, box-shadow 0.2s;
+            box-shadow: 0 4px 6px var(--shadow);
+        }
+
+        .stat-card:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 12px var(--shadow);
+        }
+
+        .stat-icon {
+            font-size: 32px;
+            width: 54px;
+            height: 54px;
+            border-radius: 10px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .stat-info {
+            display: flex;
+            flex-direction: column;
+        }
+
+        .stat-value {
+            font-size: 26px;
+            font-weight: 700;
+            color: var(--text-primary);
+        }
+
+        .stat-label {
+            font-size: 13px;
+            color: var(--text-secondary);
+            font-weight: 500;
+        }
+
+        /* Filters */
+        .filters-card {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 20px;
+            box-shadow: 0 4px 6px var(--shadow);
+        }
+
+        .filters-grid {
+            display: grid;
+            grid-template-columns: 2fr 1fr 1fr 1fr;
+            gap: 16px;
+        }
+
+        @media (max-width: 768px) {
+            .filters-grid {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        .search-input-wrapper {
+            position: relative;
+        }
+
+        .search-input {
+            width: 100%;
+            padding: 12px 16px 12px 40px;
+            background: var(--bg-dark);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            color: var(--text-primary);
+            font-size: 14px;
+            outline: none;
+            transition: border-color 0.2s;
+        }
+
+        .search-input:focus {
+            border-color: var(--primary);
+        }
+
+        .search-icon {
+            position: absolute;
+            left: 14px;
+            top: 50%;
+            transform: translateY(-50%);
+            color: var(--text-secondary);
+            font-size: 16px;
+        }
+
+        .filter-select {
+            padding: 12px 16px;
+            background: var(--bg-dark);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            color: var(--text-primary);
+            font-size: 14px;
+            outline: none;
+            cursor: pointer;
+            transition: border-color 0.2s;
+        }
+
+        .filter-select:focus {
+            border-color: var(--primary);
+        }
+
+        /* Table container */
+        .list-card {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+            box-shadow: 0 4px 12px var(--shadow);
+            min-height: 400px;
+        }
+
+        .table-scroll-container {
+            flex: 1;
+            overflow-y: auto;
+            max-height: calc(100vh - 380px);
+            position: relative;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            text-align: left;
+        }
+
+        th {
+            position: sticky;
+            top: 0;
+            background: var(--bg-hover);
+            padding: 16px;
+            font-weight: 600;
+            font-size: 12px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            color: var(--text-secondary);
+            border-bottom: 1px solid var(--border);
+            z-index: 10;
+        }
+
+        td {
+            padding: 14px 16px;
+            border-bottom: 1px solid var(--border);
+            font-size: 14px;
+            vertical-align: middle;
+        }
+
+        tr {
+            transition: background 0.2s;
+        }
+
+        tr:hover {
+            background: var(--bg-hover);
+        }
+
+        /* Student profile cell */
+        .student-cell {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .avatar {
+            width: 38px;
+            height: 38px;
+            border-radius: 50%;
+            background: linear-gradient(135deg, var(--secondary), var(--primary));
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: 600;
+            color: #ffffff;
+            font-size: 14px;
+            box-shadow: 0 2px 4px var(--shadow);
+        }
+
+        .student-details {
+            display: flex;
+            flex-direction: column;
+        }
+
+        .student-name {
+            font-weight: 600;
+            color: var(--text-primary);
+        }
+
+        .student-roll {
+            font-size: 11px;
+            color: var(--text-secondary);
+            margin-top: 2px;
+        }
+
+        /* Status Pills */
+        .status-pill {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 6px 12px;
+            border-radius: 20px;
+            font-size: 12px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            box-shadow: 0 1px 2px var(--shadow);
+        }
+
+        .status-active {
+            background: rgba(0, 242, 254, 0.15);
+            color: #00f2fe;
+            border: 1px solid rgba(0, 242, 254, 0.3);
+            animation: pulse-border 1.5s infinite;
+        }
+
+        .status-present {
+            background: rgba(16, 185, 129, 0.15);
+            color: #10b981;
+            border: 1px solid rgba(16, 185, 129, 0.3);
+        }
+
+        .status-offline {
+            background: rgba(245, 158, 11, 0.15);
+            color: #f59e0b;
+            border: 1px solid rgba(245, 158, 11, 0.3);
+        }
+
+        .status-absent {
+            background: rgba(239, 68, 68, 0.15);
+            color: #ef4444;
+            border: 1px solid rgba(239, 68, 68, 0.3);
+        }
+
+        /* Lecture details cell */
+        .class-badge {
+            font-size: 11px;
+            background: var(--bg-hover);
+            color: var(--text-secondary);
+            padding: 4px 8px;
+            border-radius: 4px;
+            border: 1px solid var(--border);
+            display: inline-block;
+            margin-bottom: 4px;
+        }
+
+        .lecture-subject {
+            font-weight: 600;
+            color: var(--text-primary);
+        }
+
+        .lecture-details {
+            font-size: 12px;
+            color: var(--text-secondary);
+            margin-top: 2px;
+        }
+
+        /* Timer UI */
+        .timer-container {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-family: monospace;
+            font-size: 15px;
+            font-weight: 600;
+        }
+
+        .timer-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: #a0aec0;
+        }
+
+        .status-active .timer-dot,
+        tr:hover .status-active .timer-dot {
+            background: #00f2fe;
+            animation: blink 1s infinite;
+        }
+
+        /* Animations */
+        @keyframes pulse {
+            0%, 100% { transform: scale(1); }
+            50% { transform: scale(1.08); }
+        }
+
+        @keyframes blink {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.3; }
+        }
+
+        @keyframes pulse-border {
+            0%, 100% { border-color: rgba(0, 242, 254, 0.3); box-shadow: 0 0 0 rgba(0, 242, 254, 0); }
+            50% { border-color: rgba(0, 242, 254, 0.8); box-shadow: 0 0 8px rgba(0, 242, 254, 0.3); }
+        }
+
+        /* Loading & Infinite Scroll Trigger */
+        .scroll-trigger {
+            padding: 20px;
+            text-align: center;
+            color: var(--text-secondary);
+            font-size: 14px;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .spinner {
+            width: 20px;
+            height: 20px;
+            border: 2px solid var(--border);
+            border-top-color: var(--primary);
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        /* Empty state */
+        .empty-state {
+            padding: 60px;
+            text-align: center;
+            color: var(--text-secondary);
+        }
+
+        .empty-icon {
+            font-size: 48px;
+            margin-bottom: 12px;
+            opacity: 0.6;
+        }
+
+        .empty-title {
+            font-size: 18px;
+            font-weight: 600;
+            color: var(--text-primary);
+            margin-bottom: 6px;
+        }
+    </style>
+</head>
+<body>
+
+    <header>
+        <div class="header-title-container">
+            <span class="header-icon">⚡</span>
+            <div>
+                <h1>College-wide Live Student Status</h1>
+                <p style="font-size: 11px; color: var(--text-secondary); margin-top: 2px;">Real-time Attendance Tracking & Background Timers Monitoring</p>
+            </div>
+        </div>
+
+        <div class="controls-container">
+            <div class="sync-container">
+                <span class="pulse-dot pulse-active" id="liveIndicator"></span>
+                <span class="sync-label" id="syncLabel">Live Syncing</span>
+                <label class="switch">
+                    <input type="checkbox" id="autoRefreshToggle" checked onchange="toggleAutoRefresh()">
+                    <span class="slider"></span>
+                </label>
+            </div>
+            <button onclick="fetchData(true)" style="background: var(--bg-hover); border: 1px solid var(--border); color: var(--text-primary); padding: 8px 14px; border-radius: 6px; font-weight: 600; font-size: 12px; cursor: pointer; display: flex; align-items: center; gap: 6px;">
+                🔄 Refresh Now
+            </button>
+        </div>
+    </header>
+
+    <div class="container">
+        <!-- Stats Row -->
+        <div class="stats-grid">
+            <div class="stat-card">
+                <div class="stat-icon" style="background: rgba(124, 58, 237, 0.15); color: var(--secondary)">👥</div>
+                <div class="stat-info">
+                    <span class="stat-value" id="statTotal">0</span>
+                    <span class="stat-label">Enrolled Students</span>
+                </div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-icon" style="background: rgba(0, 242, 254, 0.15); color: #00f2fe">⚡</div>
+                <div class="stat-info">
+                    <span class="stat-value" id="statActive">0</span>
+                    <span class="stat-label">Active / Attending</span>
+                </div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-icon" style="background: rgba(16, 185, 129, 0.15); color: var(--success)">✅</div>
+                <div class="stat-info">
+                    <span class="stat-value" id="statPresent">0</span>
+                    <span class="stat-label">Attended / Present</span>
+                </div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-icon" style="background: rgba(245, 158, 11, 0.15); color: var(--warning)">⚠️</div>
+                <div class="stat-info">
+                    <span class="stat-value" id="statOffline">0</span>
+                    <span class="stat-label">Offline Sync Delay</span>
+                </div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-icon" style="background: rgba(239, 68, 68, 0.15); color: var(--danger)">❌</div>
+                <div class="stat-info">
+                    <span class="stat-value" id="statAbsent">0</span>
+                    <span class="stat-label">Absent / Idle</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- Filters Box -->
+        <div class="filters-card">
+            <div class="filters-grid">
+                <div class="search-input-wrapper">
+                    <span class="search-icon">🔍</span>
+                    <input type="text" id="filterSearch" class="search-input" placeholder="Search by name or enrollment number..." oninput="handleFilterChange()">
+                </div>
+                <select id="filterBranch" class="filter-select" onchange="handleFilterChange()">
+                    <option value="All">All Branches</option>
+                </select>
+                <select id="filterSemester" class="filter-select" onchange="handleFilterChange()">
+                    <option value="All">All Semesters</option>
+                </select>
+                <select id="filterStatus" class="filter-select" onchange="handleFilterChange()">
+                    <option value="All">All Statuses</option>
+                    <option value="active">Active (Attending Live)</option>
+                    <option value="present">Present (Attended)</option>
+                    <option value="offline">Offline / Disconnected</option>
+                    <option value="absent">Absent</option>
+                </select>
+            </div>
+        </div>
+
+        <!-- Student List -->
+        <div class="list-card">
+            <div class="table-scroll-container" id="scrollContainer" onscroll="handleScroll()">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Student Profile</th>
+                            <th>Class details</th>
+                            <th>Current Lecture / Subject</th>
+                            <th>Status</th>
+                            <th>Lecture timer</th>
+                        </tr>
+                    </thead>
+                    <tbody id="studentListBody">
+                        <!-- Populated dynamically -->
+                    </tbody>
+                </table>
+
+                <div id="emptyState" class="empty-state" style="display: none;">
+                    <div class="empty-icon">🔍</div>
+                    <div class="empty-title">No matches found</div>
+                    <div class="empty-description">Try adjusting your filters or search query to find students.</div>
+                </div>
+
+                <div id="scrollTrigger" class="scroll-trigger" style="display: none;">
+                    <div class="spinner"></div>
+                    <span>Loading more student records...</span>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const DEFAULT_SERVER_URL = window.location.origin.includes('localhost') ? window.location.origin : 'https://letsbunk-server.azurewebsites.net';
+        const API_HOST = (localStorage.getItem('serverUrl') || DEFAULT_SERVER_URL).trim().replace(/\/+$/, '');
+        
+        let currentPage = 1;
+        let totalPages = 1;
+        let isFetching = false;
+        let autoRefreshInterval = null;
+        let loadedStudents = [];
+
+        // Apply theme from parent
+        const savedTheme = localStorage.getItem('adminTheme') || 'dark';
+        document.documentElement.setAttribute('data-theme', savedTheme);
+
+        // Run when page loads
+        window.addEventListener('DOMContentLoaded', () => {
+            loadConfigDropdowns();
+            fetchData(true);
+            startAutoRefresh();
+        });
+
+        // Load branches & semesters dynamically
+        async function loadConfigDropdowns() {
+            try {
+                const [branchesRes, semestersRes] = await Promise.all([
+                    fetch(`${API_HOST}/api/config/student-branches`),
+                    fetch(`${API_HOST}/api/config/student-semesters`)
+                ]);
+                
+                const branchesData = await branchesRes.json();
+                const semestersData = await semestersRes.json();
+
+                if (branchesData.success) {
+                    const branchSelect = document.getElementById('filterBranch');
+                    branchesData.branches.forEach(b => {
+                        const opt = document.createElement('option');
+                        opt.value = b;
+                        opt.textContent = b;
+                        branchSelect.appendChild(opt);
+                    });
+                }
+
+                if (semestersData.success) {
+                    const semSelect = document.getElementById('filterSemester');
+                    semestersData.semesters.forEach(s => {
+                        const opt = document.createElement('option');
+                        opt.value = s;
+                        opt.textContent = `Semester ${s}`;
+                        semSelect.appendChild(opt);
+                    });
+                }
+            } catch (err) {
+                console.error('Failed to load filter configurations:', err);
+            }
+        }
+
+        // Fetch data
+        async function fetchData(reset = false) {
+            if (isFetching) return;
+            isFetching = true;
+
+            if (reset) {
+                currentPage = 1;
+                document.getElementById('scrollTrigger').style.display = 'flex';
+            }
+
+            const search = document.getElementById('filterSearch').value.trim();
+            const branch = document.getElementById('filterBranch').value;
+            const semester = document.getElementById('filterSemester').value;
+            const status = document.getElementById('filterStatus').value;
+
+            // Build API URL
+            let url = `${API_HOST}/api/admin/current-status?page=${currentPage}&limit=30`;
+            if (search) url += `&search=${encodeURIComponent(search)}`;
+            if (branch !== 'All') url += `&branch=${encodeURIComponent(branch)}`;
+            if (semester !== 'All') url += `&semester=${encodeURIComponent(semester)}`;
+            if (status !== 'All') url += `&status=${encodeURIComponent(status)}`;
+
+            try {
+                const res = await fetch(url);
+                const data = await res.json();
+
+                if (data.success) {
+                    // Update stats
+                    document.getElementById('statTotal').textContent = data.pagination.total;
+                    document.getElementById('statActive').textContent = data.activeCount;
+                    document.getElementById('statPresent').textContent = data.presentCount;
+                    document.getElementById('statOffline').textContent = data.offlineCount;
+                    document.getElementById('statAbsent').textContent = data.absentCount;
+
+                    totalPages = data.pagination.totalPages;
+
+                    if (reset) {
+                        loadedStudents = data.students;
+                    } else {
+                        // Append new students, avoiding duplicates
+                        const existingIds = new Set(loadedStudents.map(s => s._id));
+                        data.students.forEach(s => {
+                            if (!existingIds.has(s._id)) {
+                                loadedStudents.push(s);
+                            }
+                        });
+                    }
+
+                    renderStudentList();
+                }
+            } catch (err) {
+                console.error('Failed to fetch status data:', err);
+            } finally {
+                isFetching = false;
+                document.getElementById('scrollTrigger').style.display = (currentPage < totalPages) ? 'flex' : 'none';
+            }
+        }
+
+        // Poll API to refresh status without modifying scroll position
+        async function pollStatusRefresh() {
+            if (isFetching) return;
+
+            const search = document.getElementById('filterSearch').value.trim();
+            const branch = document.getElementById('filterBranch').value;
+            const semester = document.getElementById('filterSemester').value;
+            const status = document.getElementById('filterStatus').value;
+
+            // Fetch all currently loaded students (page 1 with total accumulated limit)
+            const limit = Math.max(30, loadedStudents.length);
+            let url = `${API_HOST}/api/admin/current-status?page=1&limit=${limit}`;
+            if (search) url += `&search=${encodeURIComponent(search)}`;
+            if (branch !== 'All') url += `&branch=${encodeURIComponent(branch)}`;
+            if (semester !== 'All') url += `&semester=${encodeURIComponent(semester)}`;
+            if (status !== 'All') url += `&status=${encodeURIComponent(status)}`;
+
+            try {
+                const res = await fetch(url);
+                const data = await res.json();
+
+                if (data.success) {
+                    // Update stats
+                    document.getElementById('statTotal').textContent = data.pagination.total;
+                    document.getElementById('statActive').textContent = data.activeCount;
+                    document.getElementById('statPresent').textContent = data.presentCount;
+                    document.getElementById('statOffline').textContent = data.offlineCount;
+                    document.getElementById('statAbsent').textContent = data.absentCount;
+
+                    // Merge and update in-place to avoid layout flickering
+                    loadedStudents = data.students;
+                    renderStudentList();
+                }
+            } catch (err) {
+                console.error('Auto-refresh polling failed:', err);
+            }
+        }
+
+        // Render function
+        function renderStudentList() {
+            const tbody = document.getElementById('studentListBody');
+            const emptyState = document.getElementById('emptyState');
+
+            if (loadedStudents.length === 0) {
+                tbody.innerHTML = '';
+                emptyState.style.display = 'block';
+                return;
+            }
+
+            emptyState.style.display = 'none';
+            
+            // Build the HTML structure
+            let html = '';
+            loadedStudents.forEach(student => {
+                const initial = student.name ? student.name.charAt(0).toUpperCase() : 'S';
+                
+                // Status pill class & name
+                let statusClass = 'status-absent';
+                let statusLabel = 'Absent';
+                if (student.status === 'active') {
+                    statusClass = 'status-active';
+                    statusLabel = 'Active (Live)';
+                } else if (student.status === 'present') {
+                    statusClass = 'status-present';
+                    statusLabel = 'Present';
+                } else if (student.status === 'offline') {
+                    statusClass = 'status-offline';
+                    statusLabel = 'Offline (Sync Delay)';
+                }
+
+                // Format period / lecture info
+                let lectureHtml = `
+                    <div style="color: var(--text-secondary); font-size: 13px;">No Class Scheduled</div>
+                `;
+                if (student.currentSubject && student.currentSubject !== 'No Class') {
+                    lectureHtml = `
+                        <div class="class-badge">${student.period || 'Active Period'}</div>
+                        <div class="lecture-subject">${student.currentSubject}</div>
+                        <div class="lecture-details">📍 Room: ${student.room} | 👨‍🏫 ${student.teacherName}</div>
+                    `;
+                }
+
+                // Format attendance timer
+                let timerHtml = `
+                    <div class="timer-container" style="color: var(--text-secondary)">
+                        <span class="timer-dot"></span>
+                        <span>--:--</span>
+                    </div>
+                `;
+                if (student.status !== 'absent') {
+                    const mins = Math.floor(student.timerValue / 60);
+                    const secs = student.timerValue % 60;
+                    const formattedTime = `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+                    timerHtml = `
+                        <div class="timer-container" style="color: ${student.status === 'active' ? 'var(--teal)' : 'var(--success)'}">
+                            <span class="timer-dot"></span>
+                            <span>${formattedTime}</span>
+                        </div>
+                    `;
+                }
+
+                html += `
+                    <tr id="row-${student._id}">
+                        <td>
+                            <div class="student-cell">
+                                <div class="avatar">${initial}</div>
+                                <div class="student-details">
+                                    <span class="student-name">${student.name}</span>
+                                    <span class="student-roll">${student.enrollmentNo}</span>
+                                </div>
+                            </div>
+                        </td>
+                        <td>
+                            <div style="font-weight: 600; color: var(--text-primary)">${student.branch}</div>
+                            <div style="font-size: 12px; color: var(--text-secondary)">Semester ${student.semester}</div>
+                        </td>
+                        <td>${lectureHtml}</td>
+                        <td>
+                            <span class="status-pill ${statusClass}">${statusLabel}</span>
+                        </td>
+                        <td>${timerHtml}</td>
+                    </tr>
+                `;
+            });
+
+            tbody.innerHTML = html;
+        }
+
+        // Filter triggers
+        let filterTimeout = null;
+        function handleFilterChange() {
+            clearTimeout(filterTimeout);
+            filterTimeout = setTimeout(() => {
+                fetchData(true);
+            }, 300);
+        }
+
+        // Infinite Scroll Handler
+        function handleScroll() {
+            const container = document.getElementById('scrollContainer');
+            
+            // Check if scroll reached close to bottom
+            const triggerOffset = 80;
+            const reachedBottom = container.scrollHeight - container.scrollTop <= container.clientHeight + triggerOffset;
+            
+            if (reachedBottom && !isFetching && currentPage < totalPages) {
+                currentPage++;
+                fetchData(false);
+            }
+        }
+
+        // Auto Refresh
+        function startAutoRefresh() {
+            if (autoRefreshInterval) clearInterval(autoRefreshInterval);
+            
+            document.getElementById('liveIndicator').classList.add('pulse-active');
+            document.getElementById('syncLabel').textContent = 'Live Syncing';
+            
+            autoRefreshInterval = setInterval(() => {
+                pollStatusRefresh();
+            }, 5000); // Poll every 5s
+        }
+
+        function stopAutoRefresh() {
+            if (autoRefreshInterval) {
+                clearInterval(autoRefreshInterval);
+                autoRefreshInterval = null;
+            }
+            document.getElementById('liveIndicator').classList.remove('pulse-active');
+            document.getElementById('syncLabel').textContent = 'Sync Paused';
+        }
+
+        function toggleAutoRefresh() {
+            const toggle = document.getElementById('autoRefreshToggle');
+            if (toggle.checked) {
+                startAutoRefresh();
+            } else {
+                stopAutoRefresh();
+            }
+        }
+    </script>
+</body>
+</html>
