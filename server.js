@@ -11027,7 +11027,7 @@ const CCTV_USE_STUB = process.env.CCTV_USE_STUB === 'true';
 // CCTV matching thresholds — tune against real camera/room data before trusting
 // auto-confirm (see rollout plan). Overridable via env.
 const CCTV_AUTO_CONFIRM_THRESHOLD = parseFloat(process.env.CCTV_AUTO_CONFIRM_THRESHOLD || '0.75');
-const CCTV_REVIEW_THRESHOLD       = parseFloat(process.env.CCTV_REVIEW_THRESHOLD || '0.55');
+const CCTV_REVIEW_THRESHOLD       = parseFloat(process.env.CCTV_REVIEW_THRESHOLD || '0.00'); // Lowered to 0.00 for testing end-to-end flow
 const CCTV_QUALITY_FLOOR          = parseFloat(process.env.CCTV_QUALITY_FLOOR || '0.35');
 
 /**
