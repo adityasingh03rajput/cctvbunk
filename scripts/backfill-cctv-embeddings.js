@@ -9,7 +9,7 @@
  * Requires: MongoDB reachable (MONGODB_URI) + embedding service running (EMBEDDING_SERVICE_URL).
  */
 
-require('dotenv').config();
+try { require('dotenv').config(); } catch (_) { /* dotenv optional — env vars can be passed directly */ }
 const mongoose = require('mongoose');
 const axios = require('axios');
 

@@ -11578,6 +11578,88 @@ app.post('/api/cctv/reviews/:id/confirm', async (req, res) => {
     }
 });
 
+// ── One-shot backfill: build faceEmbeddingCctv from stored photoUrls ─────────
+// Runs server-side where DB + embedding-service creds already exist.
+// POST /api/cctv/backfill-embeddings  { semester?, branch?, force? }
+let backfillRunning = false;
+app.post('/api/cctv/backfill-embeddings', async (req, res) => {
+    if (backfillRunning) {
+        return res.status(409).json({ success: false, message: 'Backfill already running' });
+    }
+    try {
+        backfillRunning = true;
+        const { semester, branch, force } = req.body || {};
+        const query = {
+            photoUrl: { $exists: true, $nin: [null, ''] }
+        };
+        if (semester) query.semester = semester;
+        if (branch) query.branch = branch;
+        if (!force) {
+            query.$or = [
+                { faceEmbeddingCctv: { $exists: false } },
+                { faceEmbeddingCctv: null },
+                { faceEmbeddingCctv: { $size: 0 } }
+            ];
+        }
+
+        const students = await StudentManagement.find(query)
+            .select('enrollmentNo name photoUrl').lean();
+
+        const result = { total: students.length, ok: 0, lowQuality: [], noFace: [], failed: [] };
+
+        for (const s of students) {
+            try {
+                const imgResp = await axios.get(s.photoUrl, { responseType: 'arraybuffer', timeout: 20000 });
+                const imageBase64 = Buffer.from(imgResp.data).toString('base64');
+                const r = await getCctvEmbedding(imageBase64);
+
+                if (!r.success) { result.noFace.push(s.enrollmentNo); continue; }
+                if (r.quality_score < CCTV_QUALITY_FLOOR) { result.lowQuality.push(`${s.enrollmentNo} (q=${r.quality_score})`); continue; }
+
+                await StudentManagement.updateOne(
+                    { enrollmentNo: s.enrollmentNo },
+                    { $set: { faceEmbeddingCctv: r.embedding, faceCctvEnrolledAt: new Date() } }
+                );
+                console.log(`✅ CCTV backfill: ${s.enrollmentNo} (${s.name}) q=${r.quality_score}`);
+                result.ok++;
+            } catch (err) {
+                result.failed.push(`${s.enrollmentNo}: ${err.message}`);
+            }
+        }
+
+        console.log(`📸 CCTV backfill done: ${result.ok}/${result.total} ok`);
+        res.json({
+            success: true,
+            message: `Backfilled ${result.ok}/${result.total}. Students in lowQuality/noFace need a re-capture in the enrollment app.`,
+            result
+        });
+    } catch (err) {
+        console.error('❌ backfill error:', err.message);
+        res.status(500).json({ success: false, message: err.message });
+    } finally {
+        backfillRunning = false;
+    }
+});
+
+// Quick visibility: how many students per class actually have a CCTV embedding
+app.get('/api/cctv/embedding-status', async (req, res) => {
+    try {
+        const agg = await StudentManagement.aggregate([
+            { $match: { isActive: true } },
+            { $group: {
+                _id: { semester: '$semester', branch: '$branch' },
+                total: { $sum: 1 },
+                withCctv: { $sum: { $cond: [{ $gt: [{ $size: { $ifNull: ['$faceEmbeddingCctv', []] } }, 0] }, 1, 0] } },
+                withPhoto: { $sum: { $cond: [{ $and: [{ $ne: ['$photoUrl', null] }, { $ne: ['$photoUrl', ''] }] }, 1, 0] } }
+            } },
+            { $sort: { '_id.semester': 1, '_id.branch': 1 } }
+        ]);
+        res.json({ success: true, classes: agg.map(g => ({ semester: g._id.semester, branch: g._id.branch, total: g.total, withCctvEmbedding: g.withCctv, withPhoto: g.withPhoto })) });
+    } catch (err) {
+        res.status(500).json({ success: false, message: err.message });
+    }
+});
+
 app.post('/api/cctv/reviews/:id/reject', async (req, res) => {
     try {
         const { reviewedBy } = req.body || {};
