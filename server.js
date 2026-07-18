@@ -2606,7 +2606,9 @@ function getISTDateParts(date) {
         year: istTime.getUTCFullYear(),
         month: istTime.getUTCMonth() + 1,
         date: istTime.getUTCDate(),
-        dayIndex: istTime.getUTCDay()
+        dayIndex: istTime.getUTCDay(),
+        hour: istTime.getUTCHours(),
+        minute: istTime.getUTCMinutes()
     };
 }
 
