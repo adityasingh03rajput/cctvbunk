@@ -11650,7 +11650,7 @@ app.get('/api/cctv/embedding-status', async (req, res) => {
                 _id: { semester: '$semester', branch: '$branch' },
                 total: { $sum: 1 },
                 withCctv: { $sum: { $cond: [{ $gt: [{ $size: { $ifNull: ['$faceEmbeddingCctv', []] } }, 0] }, 1, 0] } },
-                withPhoto: { $sum: { $cond: [{ $and: [{ $ne: ['$photoUrl', null] }, { $ne: ['$photoUrl', ''] }] }, 1, 0] } }
+                withPhoto: { $sum: { $cond: [{ $gt: [{ $strLenCP: { $ifNull: ['$photoUrl', ''] } }, 0] }, 1, 0] } }
             } },
             { $sort: { '_id.semester': 1, '_id.branch': 1 } }
         ]);
