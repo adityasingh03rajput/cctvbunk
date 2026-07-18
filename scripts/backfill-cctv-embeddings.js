@@ -14,7 +14,7 @@ const mongoose = require('mongoose');
 const axios = require('axios');
 
 const MONGODB_URI = process.env.MONGODB_URI || 'mongodb://localhost:27017/attendance_app';
-const EMBEDDING_SERVICE_URL = process.env.EMBEDDING_SERVICE_URL || 'https://richpic-ai-service.onrender.com';
+const EMBEDDING_SERVICE_URL = process.env.EMBEDDING_SERVICE_URL || 'https://spyfromsky-80093.centralindia.cloudapp.azure.com';
 const EMBED_SHARED_SECRET = process.env.EMBED_SHARED_SECRET || '';
 const EMBED_HEADERS = EMBED_SHARED_SECRET ? { 'x-embed-secret': EMBED_SHARED_SECRET } : {};
 const QUALITY_FLOOR = parseFloat(process.env.CCTV_QUALITY_FLOOR || '0.35');

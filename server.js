@@ -11019,7 +11019,7 @@ const FaceMatchReview = mongoose.model('FaceMatchReview', faceMatchReviewSchema)
 // CCTV ATTENDANCE — EMBEDDING SERVICE CLIENT
 // ============================================
 
-const EMBEDDING_SERVICE_URL = process.env.EMBEDDING_SERVICE_URL || 'https://richpic-ai-service.onrender.com';
+const EMBEDDING_SERVICE_URL = process.env.EMBEDDING_SERVICE_URL || 'https://spyfromsky-80093.centralindia.cloudapp.azure.com';
 const EMBED_SHARED_SECRET   = process.env.EMBED_SHARED_SECRET || '';
 // Set CCTV_USE_STUB=true to force the deterministic stub (pipeline testing without the Python service)
 const CCTV_USE_STUB = process.env.CCTV_USE_STUB === 'true';
