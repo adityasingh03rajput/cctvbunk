@@ -11042,7 +11042,7 @@ async function getCctvEmbedding(imageBase64) {
     if (!CCTV_USE_STUB) {
         try {
             const resp = await axios.post(`${EMBEDDING_SERVICE_URL}/embed`,
-                { image_base64: imageBase64 },
+                { image_base64: imageBase64, enforce_detection: false },
                 {
                     headers: EMBED_SHARED_SECRET ? { 'x-embed-secret': EMBED_SHARED_SECRET } : {},
                     // Render free tier cold start: model download/load can take 1-2 min
@@ -11441,8 +11441,18 @@ app.post('/api/cctv/submit-capture', cameraAuth, async (req, res) => {
         // 2. Each crop → embed → gate → match → threshold routing
         for (const crop of crops) {
             try {
-                const embedResult = await getCctvEmbedding(crop.imageBase64);
-                if (!embedResult.success) { summary.errors++; continue; }
+                let embedResult = await getCctvEmbedding(crop.imageBase64);
+                if (!embedResult.success && req.body.fullFrameBase64) { 
+                    console.log(`⚠️ Crop failed (${embedResult.message}), trying full frame fallback...`);
+                    embedResult = await getCctvEmbedding(req.body.fullFrameBase64);
+                }
+                
+                if (!embedResult.success) { 
+                    summary.errors++; 
+                    summary.notes.push(`Crop error: ${embedResult.message}`);
+                    continue; 
+                }
+                
                 if (embedResult.quality_score < CCTV_QUALITY_FLOOR) { summary.discardedLowQuality++; continue; }
 
                 const candidates = await matchCctvEmbedding(embedResult.embedding, window.semester, window.branch, 3);
