@@ -11424,7 +11424,17 @@ app.post('/api/cctv/submit-capture', cameraAuth, async (req, res) => {
             snapshotUrl = await uploadCctvImage(fullFrameBase64, 'frames');
         }
 
-        const summary = { autoConfirmed: [], review: 0, discardedLowQuality: 0, discardedNoMatch: 0, errors: 0 };
+        const summary = { autoConfirmed: [], review: 0, discardedLowQuality: 0, discardedNoMatch: 0, errors: 0, notes: [] };
+
+        // How many students in this class are actually matchable? If zero, every
+        // crop will "no-match" — surface that clearly instead of a silent discard.
+        const poolSize = await StudentManagement.countDocuments({
+            semester: window.semester, branch: window.branch, isActive: true,
+            faceEmbeddingCctv: { $exists: true, $ne: null, $not: { $size: 0 } }
+        });
+        if (poolSize === 0) {
+            summary.notes.push(`No students in ${window.semester}/${window.branch} have a CCTV embedding (faceEmbeddingCctv). Run scripts/backfill-cctv-embeddings.js or re-enroll students — matching is impossible until then.`);
+        }
 
         // 2. Each crop → embed → gate → match → threshold routing
         for (const crop of crops) {
@@ -11462,6 +11472,7 @@ app.post('/api/cctv/submit-capture', cameraAuth, async (req, res) => {
                     summary.review++;
                 } else {
                     summary.discardedNoMatch++;
+                    summary.notes.push(`Crop discarded: best candidate ${best.enrollmentNo} at similarity ${best.similarity} (below review threshold ${CCTV_REVIEW_THRESHOLD})`);
                 }
             } catch (cropErr) {
                 console.error('❌ Crop processing error:', cropErr.message);
